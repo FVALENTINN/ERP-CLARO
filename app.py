@@ -121,6 +121,21 @@ h4, h5 { color: var(--texto); }
     color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: .85rem; }
 
 /* ---------- Login ---------- */
+/* Panel de login centrado con el formulario dentro */
+.st-key-login_card { background: linear-gradient(145deg, var(--navy) 0%, var(--navy-2) 60%, #1B4B8F 100%);
+    border-radius: 22px; padding: 38px 40px 30px 40px; box-shadow: 0 14px 40px rgba(11,30,63,.35); }
+.login-top { text-align: center; margin-bottom: 6px; }
+.login-top .t1 { font-size: 2.6rem; font-weight: 800; color: #fff; line-height: 1.1; }
+.login-top .t2 { background: linear-gradient(90deg, #3B8BF0, #22B8CF); -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent; }
+.login-top .t3 { font-size: 1.3rem; font-weight: 700; color: #fff; margin-top: 4px; }
+.login-top .lema { color: #C9D7EE; font-size: .95rem; margin-top: 10px; }
+.st-key-login_card div[data-testid="stForm"] { background: #fff; border: none; border-radius: 16px;
+    padding: 22px 24px; box-shadow: 0 10px 30px rgba(0,0,0,.25); }
+.st-key-login_card .login-feats { margin-top: 18px; }
+.st-key-login_card .login-pie { text-align: center; margin-top: 18px; }
+.st-key-login_card div[data-testid="stAlert"] { background: #FDECEC; border-radius: 12px; }
+.st-key-login_card div[data-testid="stAlert"] p { color: #B91C1C !important; font-weight: 600; }
 .login-panel { background: linear-gradient(145deg, var(--navy) 0%, var(--navy-2) 60%, #1B4B8F 100%);
     border-radius: 22px; padding: 44px 40px; color: #fff; min-height: 520px; box-shadow: 0 14px 40px rgba(11,30,63,.35);
     position: relative; overflow: hidden; }
@@ -156,22 +171,14 @@ ICONOS = {
 
 def pantalla_login():
     cfg = db.get_config()
-    st.markdown("<div style='height:3vh'></div>", unsafe_allow_html=True)
-    izq, der = st.columns([1.25, 1], gap="large")
-    with izq:
+    st.markdown("<div style='height:2vh'></div>", unsafe_allow_html=True)
+    _, centro, _ = st.columns([1, 1.35, 1])
+    with centro, st.container(key="login_card"):
         st.markdown(
-            "<div class='login-panel'><div class='t1'>ERP</div><div class='t2'>Dashboard</div>"
+            "<div class='login-top'><div class='t1'>ERP <span class='t2'>Dashboard</span></div>"
             "<div class='t3'>Inventario Claro</div>"
-            f"<div class='lema'>Información en tiempo real. Decisiones más inteligentes.<br>{cfg['empresa']}</div>"
-            "<div class='login-feats'>"
-            "<div><span>⏱️</span>Monitoreo en tiempo real</div><div><span>📊</span>Análisis de rotación</div>"
-            "<div><span>🔔</span>Alertas de 90 días</div><div><span>📧</span>Control de reclamos</div></div>"
-            "<div class='login-pie'>Todo su inventario. <b>Un solo panel.</b></div></div>",
+            f"<div class='lema'>Información en tiempo real. Decisiones más inteligentes.<br>{cfg['empresa']}</div></div>",
             unsafe_allow_html=True)
-    with der:
-        st.markdown("<div style='height:9vh'></div>", unsafe_allow_html=True)
-        st.markdown("<div class='login-hero'><h2>Bienvenido</h2><p>Ingrese sus credenciales para continuar</p></div>",
-                    unsafe_allow_html=True)
         with st.form("login"):
             usuario = st.text_input("Usuario")
             clave = st.text_input("Contraseña", type="password")
@@ -192,7 +199,12 @@ def pantalla_login():
                 db.execute("UPDATE usuarios SET ultimo_acceso=:a WHERE id=:i", {"a": ahora(), "i": int(u["id"])})
                 db.log(u["username"], "Login", "Ingreso")
                 st.rerun()
-        st.caption("Primer ingreso: usuario **admin** / contraseña **admin123** (se pedirá cambiarla).")
+        st.markdown(
+            "<div class='login-feats'>"
+            "<div><span>⏱️</span>Monitoreo en tiempo real</div><div><span>📊</span>Análisis de rotación</div>"
+            "<div><span>🔔</span>Alertas de 90 días</div><div><span>📧</span>Control de reclamos</div></div>"
+            "<div class='login-pie'>Primer ingreso: <b>admin</b> / <b>admin123</b> (se pedirá cambiarla)</div>",
+            unsafe_allow_html=True)
 
 
 def pantalla_cambio_password():
