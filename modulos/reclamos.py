@@ -7,7 +7,7 @@ import streamlit as st
 
 from core import db, servicios as sv
 from core.auth import puede, usuario_actual
-from core.utils import hoy, limpiar_serie, soles, soles0, to_excel
+from core.utils import hoy, limpiar_serie, parse_fecha, soles, soles0, to_excel
 from modulos.dashboard import encabezado
 
 ABIERTOS = ["PENDIENTE NC", "RECLAMADO", "NC PARCIAL"]
@@ -205,10 +205,10 @@ def render():
                         if fila.empty:
                             res.append("Sin reclamo abierto")
                             continue
-                        f = pd.to_datetime(r.get("FECHA"), dayfirst=True, errors="coerce")
+                        f = parse_fecha(r.get("FECHA"))
                         res.append(sv.registrar_nc(int(fila.iloc[0]["id"]), str(r.get("N_NC", "")).strip().upper(),
                                                    float(pd.to_numeric(r.get("MONTO"), errors="coerce") or 0),
-                                                   f.date() if not pd.isna(f) else hoy(), u["username"]))
+                                                   f or hoy(), u["username"]))
                     df["RESULTADO"] = res
                     st.dataframe(df, hide_index=True)
 
