@@ -175,3 +175,24 @@ def plantilla_importacion() -> bytes:
             nota.write(i, 0, l)
         nota.set_column(0, 0, 110)
     return buf.getvalue()
+
+
+def parse_fecha(v):
+    """Convierte fechas de Excel/CSV a date. Acepta fecha real de Excel (AAAA-MM-DD),
+    texto DD/MM/AAAA y número de serie de Excel. Devuelve None si no es válida."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return None
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    s = str(v).strip()
+    if not s or s.upper() in ("NAN", "NAT", "NONE"):
+        return None
+    if re.match(r"^\d{4}-\d{1,2}-\d{1,2}", s):          # fecha real de Excel leída como texto
+        f = pd.to_datetime(s[:10], format="%Y-%m-%d", errors="coerce")
+    elif re.fullmatch(r"\d{5}(\.0+)?", s):                # número de serie de Excel
+        f = pd.Timestamp("1899-12-30") + pd.Timedelta(days=int(float(s)))
+    else:                                                 # texto DD/MM/AAAA
+        f = pd.to_datetime(s, dayfirst=True, errors="coerce")
+    return None if pd.isna(f) else f.date()
