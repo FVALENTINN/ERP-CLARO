@@ -1,9 +1,14 @@
 [theme]
-primaryColor = "#DA291C"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F4F5F7"
-textColor = "#1E1E1E"
+primaryColor = "#1E6FD9"
+backgroundColor = "#F3F6FB"
+secondaryBackgroundColor = "#EAF0F8"
+textColor = "#0F172A"
 font = "sans serif"
+
+[theme.sidebar]
+backgroundColor = "#0B1E3F"
+secondaryBackgroundColor = "#12305E"
+textColor = "#E6EEF9"
 
 [server]
 maxUploadSize = 50
