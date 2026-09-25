@@ -176,7 +176,7 @@ def pantalla_login():
     with centro, st.container(key="login_card"):
         st.markdown(
             "<div class='login-top'><div class='t1'>Inventario de <span class='t2'>Claro</span></div>"
-            f"<div class='lema'>Información en tiempo real. Decisiones más inteligentes.<br>{cfg['empresa']}</div></div>",
+            f"<div class='lema'>{cfg['empresa']}</div></div>",
             unsafe_allow_html=True)
         with st.form("login"):
             usuario = st.text_input("Usuario")
