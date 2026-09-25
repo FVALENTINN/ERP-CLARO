@@ -5,7 +5,7 @@ import pandas as pd
 from sqlalchemy import text
 
 from core import db
-from core.utils import ahora, hoy, limpiar_serie, validar_serie
+from core.utils import ahora, hoy, limpiar_serie, parse_fecha, validar_serie
 
 COLS_IMPORT = ["MODELO", "MARCA", "IMEI", "PRECIO", "N_FACTURA"]
 ALIAS_COLS = {
@@ -491,7 +491,7 @@ def validar_ventas_masivo(df_raw: pd.DataFrame) -> pd.DataFrame:
                                                    "CONTADO ": "CONTADO"})
     df["PRECIO"] = pd.to_numeric(df["PRECIO"], errors="coerce")
     df["N_CUOTAS"] = pd.to_numeric(df["N_CUOTAS"], errors="coerce")
-    df["FECHA"] = pd.to_datetime(df["FECHA"], errors="coerce", dayfirst=True, format="mixed").dt.date
+    df["FECHA"] = df["FECHA"].map(parse_fecha)
     df["TIPO_DOC"] = df["DOCUMENTO"].map(inferir_tipo_doc)
 
     inv = _inventario_por_series(df["IMEI"].tolist())
@@ -529,9 +529,10 @@ def validar_ventas_masivo(df_raw: pd.DataFrame) -> pd.DataFrame:
         if r["FECHA"] is None or pd.isna(r["FECHA"]):
             e.append("Fecha inválida (use DD/MM/AAAA)")
         elif r["FECHA"] > hoy():
-            e.append("Fecha futura")
+            e.append(f"Fecha futura ({r['FECHA']:%d/%m/%Y})")
         elif it is not None and pd.notna(it["fecha_compra"]) and r["FECHA"] < pd.to_datetime(it["fecha_compra"]).date():
-            e.append("Fecha de venta anterior a la fecha de compra")
+            e.append(f"Fecha de venta {r['FECHA']:%d/%m/%Y} anterior a la compra "
+                     f"{pd.to_datetime(it['fecha_compra']):%d/%m/%Y}")
         if not r["MODALIDAD"]:
             e.append("Modalidad vacía")
         if r["FORMA_PAGO"] not in ("CONTADO", "CUOTAS"):
