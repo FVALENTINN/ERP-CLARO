@@ -175,8 +175,7 @@ def pantalla_login():
     _, centro, _ = st.columns([1, 1.35, 1])
     with centro, st.container(key="login_card"):
         st.markdown(
-            "<div class='login-top'><div class='t1'>ERP <span class='t2'>Dashboard</span></div>"
-            "<div class='t3'>Inventario Claro</div>"
+            "<div class='login-top'><div class='t1'>Inventario de <span class='t2'>Claro</span></div>"
             f"<div class='lema'>Información en tiempo real. Decisiones más inteligentes.<br>{cfg['empresa']}</div></div>",
             unsafe_allow_html=True)
         with st.form("login"):
