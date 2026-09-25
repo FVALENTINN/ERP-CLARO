@@ -165,6 +165,13 @@ def _get_database_url():
     except Exception:
         url = None
     url = url or os.environ.get("DATABASE_URL")
+    if url and "://" in url and "@" in url:
+        from urllib.parse import quote, unquote
+        esquema, resto = url.split("://", 1)
+        credenciales, host = resto.rsplit("@", 1)
+        if ":" in credenciales:
+            usuario, clave = credenciales.split(":", 1)
+            url = f"{esquema}://{usuario}:{quote(unquote(clave), safe='')}@{host}"
     if url:
         if url.startswith("postgres://"):
             url = url.replace("postgres://", "postgresql+psycopg2://", 1)
