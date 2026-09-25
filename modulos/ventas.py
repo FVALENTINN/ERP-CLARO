@@ -12,6 +12,14 @@ from modulos.dashboard import encabezado
 MODALIDADES = ["PORTABILIDAD", "ALTA NUEVA", "RENOVACIÓN", "CAMBIO DE EQUIPO", "PREPAGO", "POSTPAGO"]
 
 
+def _ddmm(df):
+    """Muestra la columna FECHA como DD/MM/AAAA."""
+    v = df.copy()
+    if "FECHA" in v.columns:
+        v["FECHA"] = v["FECHA"].map(lambda d: d.strftime("%d/%m/%Y") if hasattr(d, "strftime") else "")
+    return v
+
+
 def importar_ventas(u):
     if not puede("registrar_venta"):
         st.warning("Su rol no puede registrar ventas.")
@@ -53,13 +61,12 @@ def importar_ventas(u):
     if len(err):
         st.error("Hay ventas con error. Solo se registrarán las válidas.")
         cols_err = ["IMEI", "MOTIVO"] + [c for c in visibles if c not in ("IMEI", "MOTIVO", "RESULTADO", "OBSERVACION")]
-        st.dataframe(err[cols_err], hide_index=True, height=240)
-        st.download_button("⬇️ Descargar errores", to_excel({"Errores": err[visibles]}), "errores_ventas.xlsx")
+        st.dataframe(_ddmm(err[cols_err]), hide_index=True, height=240)
+        st.download_button("⬇️ Descargar errores", to_excel({"Errores": _ddmm(err[visibles])}), "errores_ventas.xlsx")
     if len(ok):
         with st.expander(f"Ver ventas válidas ({len(ok):,})"):
-            st.dataframe(ok[visibles], hide_index=True, column_config={
-                "PRECIO": st.column_config.NumberColumn(format="S/ %.2f"),
-                "FECHA": st.column_config.DateColumn(format="DD/MM/YYYY")})
+            st.dataframe(_ddmm(ok[visibles]), hide_index=True, column_config={
+                "PRECIO": st.column_config.NumberColumn(format="S/ %.2f")})
         b = st.columns([1, 1, 3])
         if b[0].button(f"2️⃣ Registrar {len(ok):,} ventas", type="primary"):
             with st.spinner("Registrando ventas..."):
