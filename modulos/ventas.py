@@ -5,7 +5,7 @@ import streamlit as st
 
 from core import db, servicios as sv
 from core.auth import puede, usuario_actual
-from core.utils import hoy, limpiar_serie, soles, soles0, to_excel, validar_documento
+from core.utils import hoy, limpiar_serie, parse_fecha, soles, soles0, to_excel, validar_documento
 from modulos.dashboard import encabezado
 
 
@@ -270,11 +270,11 @@ def render():
                 df.columns = [c.strip().upper() for c in df.columns]
                 res = []
                 for _, r in df.iterrows():
-                    fecha = pd.to_datetime(r.get("FECHA"), dayfirst=True, errors="coerce")
+                    fecha = parse_fecha(r.get("FECHA"))
                     estado = sv.registrar_factura_claro(
                         limpiar_serie(r.get("IMEI")), str(r.get("N_FACTURA", "")).strip().upper(),
                         float(pd.to_numeric(r.get("MONTO"), errors="coerce") or 0),
-                        fecha.date() if not pd.isna(fecha) else hoy(), u["username"])
+                        fecha or hoy(), u["username"])
                     res.append(estado)
                 df["RESULTADO"] = res
                 st.success(f"Procesadas {sum(x == 'OK' for x in res)} de {len(res)} facturas.")
