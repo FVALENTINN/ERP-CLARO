@@ -123,7 +123,7 @@ def to_excel(hojas: dict) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="xlsxwriter") as xw:
         wb = xw.book
-        head = wb.add_format({"bold": True, "bg_color": "#DA291C", "font_color": "white", "border": 1})
+        head = wb.add_format({"bold": True, "bg_color": "#0B1E3F", "font_color": "white", "border": 1})
         for nombre, df in hojas.items():
             df = df.copy()
             df.to_excel(xw, sheet_name=nombre[:31], index=False)
@@ -149,7 +149,7 @@ def plantilla_importacion() -> bytes:
     with pd.ExcelWriter(buf, engine="xlsxwriter") as xw:
         df.to_excel(xw, sheet_name="IMEIS", index=False)
         wb, ws = xw.book, xw.sheets["IMEIS"]
-        head = wb.add_format({"bold": True, "bg_color": "#DA291C", "font_color": "white", "border": 1})
+        head = wb.add_format({"bold": True, "bg_color": "#0B1E3F", "font_color": "white", "border": 1})
         txt = wb.add_format({"num_format": "@"})
         for i, c in enumerate(df.columns):
             ws.write(0, i, c, head)

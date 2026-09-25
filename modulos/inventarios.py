@@ -128,7 +128,7 @@ def render():
                 cal = prox.groupby("fecha_limite").agg(Unidades=("serie", "size"),
                                                        Valor=("precio_compra", "sum")).reset_index()
                 cal.columns = ["Fecha límite", "Unidades", "Valor"]
-                st.bar_chart(cal, x="Fecha límite", y="Unidades", color="#DA291C")
+                st.bar_chart(cal, x="Fecha límite", y="Unidades", color="#1E6FD9")
             else:
                 st.caption("Sin vencimientos en los próximos 60 días.")
 
