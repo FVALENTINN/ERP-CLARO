@@ -9,10 +9,76 @@ from core.utils import hoy, limpiar_serie, soles, soles0, to_excel, validar_docu
 from modulos.dashboard import encabezado
 
 
+MODALIDADES = ["PORTABILIDAD", "ALTA NUEVA", "RENOVACIÓN", "CAMBIO DE EQUIPO", "PREPAGO", "POSTPAGO"]
+
+
+def importar_ventas(u):
+    if not puede("registrar_venta"):
+        st.warning("Su rol no puede registrar ventas.")
+        return
+    msg = st.session_state.pop("impv_ok", None)
+    if msg:
+        st.success(msg)
+    c = st.columns([2, 1])
+    c[0].markdown("Estructura del Excel: **CLIENTE – DNI/CE/RUC – MODELO – IMEI – PRECIO – FECHA – MODALIDAD – "
+                  "CONTADO/CUOTAS – #CUOTAS**. Opcionales: BO y MOTORIZADO.")
+    c[1].download_button("⬇️ Descargar plantilla", sv.plantilla_ventas(), "plantilla_ventas.xlsx", width="stretch")
+    with st.form("impv_form"):
+        archivo = st.file_uploader("Archivo Excel (.xlsx) o CSV con las ventas", type=["xlsx", "xls", "csv"])
+        validar = st.form_submit_button("1️⃣ Validar archivo", type="primary")
+    if validar and archivo:
+        try:
+            raw = (pd.read_csv(archivo, dtype=str, sep=None, engine="python") if archivo.name.lower().endswith(".csv")
+                   else pd.read_excel(archivo, dtype=str))
+            with st.spinner(f"Validando {len(raw):,} ventas..."):
+                st.session_state.impv = {"res": sv.validar_ventas_masivo(raw), "archivo": archivo.name}
+        except Exception as e:
+            st.error(f"No se pudo procesar el archivo: {e}")
+            st.session_state.pop("impv", None)
+    imp = st.session_state.get("impv")
+    if not imp:
+        return
+    res = imp["res"]
+    ok = res[res["RESULTADO"] == "OK"]
+    err = res[res["RESULTADO"] == "ERROR"]
+    bajo = ok[ok["PRECIO"] < ok["_precio_compra"]]
+    visibles = ["CLIENTE", "TIPO_DOC", "DOCUMENTO", "MODELO", "IMEI", "PRECIO", "FECHA", "MODALIDAD", "FORMA_PAGO",
+                "N_CUOTAS", "BO", "MOTORIZADO", "RESULTADO", "MOTIVO", "OBSERVACION"]
+    st.markdown(f"##### Resultado de validación – {imp['archivo']}")
+    m = st.columns(4)
+    m[0].metric("Ventas leídas", f"{len(res):,}")
+    m[1].metric("✅ Válidas", f"{len(ok):,}")
+    m[2].metric("❌ Con error", f"{len(err):,}")
+    m[3].metric("Bajo costo (generan NC)", f"{len(bajo):,}")
+    if len(err):
+        st.error("Hay ventas con error. Solo se registrarán las válidas.")
+        cols_err = ["IMEI", "MOTIVO"] + [c for c in visibles if c not in ("IMEI", "MOTIVO", "RESULTADO", "OBSERVACION")]
+        st.dataframe(err[cols_err], hide_index=True, height=240)
+        st.download_button("⬇️ Descargar errores", to_excel({"Errores": err[visibles]}), "errores_ventas.xlsx")
+    if len(ok):
+        with st.expander(f"Ver ventas válidas ({len(ok):,})"):
+            st.dataframe(ok[visibles], hide_index=True, column_config={
+                "PRECIO": st.column_config.NumberColumn(format="S/ %.2f"),
+                "FECHA": st.column_config.DateColumn(format="DD/MM/YYYY")})
+        b = st.columns([1, 1, 3])
+        if b[0].button(f"2️⃣ Registrar {len(ok):,} ventas", type="primary"):
+            with st.spinner("Registrando ventas..."):
+                r = sv.registrar_ventas_masivo(ok, u["username"])
+            st.session_state.pop("impv")
+            extra = (f" Se crearon {r['reclamos']} reclamos de NC por {soles(r['monto_nc'])}."
+                     if r["reclamos"] else "")
+            st.session_state.impv_ok = f"✅ {r['ventas']:,} ventas registradas.{extra}"
+            st.rerun()
+        if b[1].button("Cancelar", key="impv_cancel"):
+            st.session_state.pop("impv")
+            st.rerun()
+
+
 def render():
     encabezado("💳 Ventas", "Registro de ventas al consumidor final, facturas de Claro y control de precio compra vs. venta")
     u = usuario_actual()
-    tabs = st.tabs(["🧾 Registrar venta", "📋 Ventas registradas", "📑 Facturas de Claro", "🛵 Por motorizado"])
+    tabs = st.tabs(["🧾 Registrar venta", "📥 Importar ventas (Excel)", "📋 Ventas registradas",
+                    "📑 Facturas de Claro", "🛵 Por motorizado"])
 
     # ================================================================ REGISTRAR
     with tabs[0]:
@@ -59,9 +125,14 @@ def render():
                     bo = c[2].text_input("BO (Business Order)")
                     motorizado = c[3].selectbox("Motorizado", motorizados, index=None, accept_new_options=True,
                                                 placeholder="Seleccione o escriba")
-                    c = st.columns([1, 3])
-                    comprobante = c[0].text_input("Comprobante (opcional)")
-                    obs = c[1].text_input("Observación")
+                    c = st.columns(4)
+                    modalidad = c[0].selectbox("Modalidad", MODALIDADES, index=None, accept_new_options=True,
+                                               placeholder="Seleccione o escriba")
+                    forma_pago = c[1].selectbox("Contado / Cuotas", ["CONTADO", "CUOTAS"])
+                    nro_cuotas = c[2].number_input("N° de cuotas", min_value=0, max_value=60, step=1, value=0,
+                                                   help="0 si es al contado")
+                    comprobante = c[3].text_input("Comprobante (opcional)")
+                    obs = st.text_input("Observación")
                     enviar = st.form_submit_button("💾 Registrar venta", type="primary")
                 if enviar:
                     errores = []
@@ -74,6 +145,10 @@ def render():
                         errores.append("Ingrese el BO.")
                     if not motorizado:
                         errores.append("Indique el motorizado.")
+                    if not modalidad:
+                        errores.append("Indique la modalidad de la venta.")
+                    if forma_pago == "CUOTAS" and nro_cuotas < 1:
+                        errores.append("Indique el número de cuotas.")
                     if fecha < item["fecha_compra"]:
                         errores.append("La fecha de venta no puede ser anterior a la fecha de compra.")
                     if bo.strip() and db.scalar("SELECT COUNT(*) FROM ventas WHERE bo=:b AND estado='ACTIVA'",
@@ -88,7 +163,8 @@ def render():
                             "nro_doc": nro_doc.strip().upper(), "cliente": cliente.strip().upper(),
                             "telefono": telefono.strip(), "precio_venta": precio, "bo": bo.strip().upper(),
                             "motorizado": str(motorizado).strip().upper(), "comprobante": comprobante.strip().upper(),
-                            "observacion": obs,
+                            "observacion": obs, "modalidad": str(modalidad).strip().upper(),
+                            "forma_pago": forma_pago, "nro_cuotas": int(nro_cuotas) if forma_pago == "CUOTAS" else 0,
                         }, u["username"])
                         info = {"msg": f"✅ Venta #{r['venta_id']} registrada – IMEI {item['serie']}."}
                         if r["diferencia"] < 0:
@@ -99,8 +175,12 @@ def render():
                         st.session_state.limpiar_v_serie = True
                         st.rerun()
 
-    # ================================================================ LISTADO
+    # ================================================================ IMPORTAR
     with tabs[1]:
+        importar_ventas(u)
+
+    # ================================================================ LISTADO
+    with tabs[2]:
         c = st.columns([1, 1, 1, 2])
         d1 = c[0].date_input("Desde", hoy() - timedelta(days=30), format="DD/MM/YYYY", key="lv1")
         d2 = c[1].date_input("Hasta", hoy(), format="DD/MM/YYYY", key="lv2")
@@ -129,10 +209,12 @@ def render():
             m[2].metric("Costo", soles0(act["precio_compra"].sum()))
             m[3].metric("Diferencia (venta − costo)", soles0(act["diferencia"].sum()))
             vista = v[["id", "fecha_venta", "estado", "tipo", "tipo_doc", "nro_doc", "cliente", "marca", "modelo",
-                       "serie", "precio_compra", "precio_venta", "diferencia", "bo", "motorizado", "factura_claro",
+                       "serie", "precio_compra", "precio_venta", "diferencia", "modalidad", "forma_pago",
+                       "nro_cuotas", "bo", "motorizado", "factura_claro",
                        "monto_factura_claro", "comprobante", "usuario"]]
             vista.columns = ["N°", "Fecha", "Estado", "Tipo", "Doc", "N° doc", "Cliente", "Marca", "Modelo",
-                             "IMEI/ICCID", "P. compra", "P. venta", "Diferencia", "BO", "Motorizado",
+                             "IMEI/ICCID", "P. compra", "P. venta", "Diferencia", "Modalidad", "Contado/Cuotas",
+                             "N° cuotas", "BO", "Motorizado",
                              "Fact. Claro", "Monto fact. Claro", "Comprobante", "Usuario"]
             money = st.column_config.NumberColumn(format="S/ %.2f")
             st.dataframe(vista, hide_index=True, column_config={
@@ -155,7 +237,7 @@ def render():
                             st.rerun()
 
     # ================================================================ FACTURAS CLARO
-    with tabs[2]:
+    with tabs[3]:
         st.caption("Al ser consignación, Claro emite su factura **después** de la venta. Registre la factura para "
                    "conciliar: si el monto facturado es mayor al precio de venta, el sistema actualiza el monto de NC "
                    "a reclamar.")
@@ -199,7 +281,7 @@ def render():
                 st.dataframe(df, hide_index=True)
 
     # ================================================================ MOTORIZADO
-    with tabs[3]:
+    with tabs[4]:
         c = st.columns(3)
         m1 = c[0].date_input("Desde", hoy().replace(day=1), format="DD/MM/YYYY", key="mo1")
         m2 = c[1].date_input("Hasta", hoy(), format="DD/MM/YYYY", key="mo2")

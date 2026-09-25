@@ -180,6 +180,8 @@ def registrar_venta(datos: dict, usuario: str) -> dict:
             telefono=datos.get("telefono", ""), marca=item["marca"], modelo=item["modelo"],
             serie=item["serie"], precio_compra=precio_compra, precio_venta=precio_venta,
             diferencia=diferencia, bo=datos.get("bo", ""), motorizado=datos.get("motorizado", ""),
+            modalidad=datos.get("modalidad", ""), forma_pago=datos.get("forma_pago", "CONTADO"),
+            nro_cuotas=int(datos.get("nro_cuotas", 0) or 0),
             comprobante=datos.get("comprobante", ""), estado="ACTIVA",
             observacion=datos.get("observacion", ""), usuario=usuario, creado_en=ahora(),
         ))
@@ -416,3 +418,252 @@ def kardex_df(desde: date, hasta: date) -> pd.DataFrame:
     v = val.groupby(["tipo", "marca", "modelo"])["precio_compra"].sum().rename("valor_saldo_final").reset_index()
     k = k.merge(v, how="left", on=["tipo", "marca", "modelo"]).fillna({"valor_saldo_final": 0})
     return k[(k[["saldo_inicial", "ingresos", "salidas", "saldo_final"]].sum(axis=1)) > 0]
+
+
+# =================================================================== VENTAS MASIVAS (EXCEL)
+COLS_VENTA = ["CLIENTE", "DOCUMENTO", "MODELO", "IMEI", "PRECIO", "FECHA", "MODALIDAD", "FORMA_PAGO", "N_CUOTAS"]
+COLS_VENTA_OPC = ["BO", "MOTORIZADO", "TELEFONO"]
+ALIAS_VENTA = {
+    "CLIENTE": "CLIENTE", "NOMBRE": "CLIENTE", "RAZON SOCIAL": "CLIENTE", "NOMBRE / RAZON SOCIAL": "CLIENTE",
+    "DOCUMENTO": "DOCUMENTO", "DNI/CE/RUC": "DOCUMENTO", "DNI / CE / RUC": "DOCUMENTO", "DNI": "DOCUMENTO",
+    "RUC": "DOCUMENTO", "CE": "DOCUMENTO", "NRO DOC": "DOCUMENTO", "NRO_DOC": "DOCUMENTO", "N° DOCUMENTO": "DOCUMENTO",
+    "NUMERO DOCUMENTO": "DOCUMENTO",
+    "MODELO": "MODELO", "IMEI": "IMEI", "ICCID": "IMEI", "SERIE": "IMEI", "IMEI/ICCID": "IMEI",
+    "PRECIO": "PRECIO", "PRECIO VENTA": "PRECIO", "PRECIO_VENTA": "PRECIO",
+    "FECHA": "FECHA", "FECHA VENTA": "FECHA", "FECHA_VENTA": "FECHA",
+    "MODALIDAD": "MODALIDAD", "TIPO VENTA": "MODALIDAD",
+    "FORMA_PAGO": "FORMA_PAGO", "FORMA PAGO": "FORMA_PAGO", "FORMA DE PAGO": "FORMA_PAGO",
+    "CONTADO/CUOTAS": "FORMA_PAGO", "CONTADO / CUOTAS": "FORMA_PAGO", "PAGO": "FORMA_PAGO",
+    "N_CUOTAS": "N_CUOTAS", "#CUOTAS": "N_CUOTAS", "# CUOTAS": "N_CUOTAS", "N° CUOTAS": "N_CUOTAS",
+    "NRO CUOTAS": "N_CUOTAS", "NRO_CUOTAS": "N_CUOTAS", "CUOTAS": "N_CUOTAS", "NUMERO DE CUOTAS": "N_CUOTAS",
+    "BO": "BO", "MOTORIZADO": "MOTORIZADO", "TELEFONO": "TELEFONO", "TELÉFONO": "TELEFONO",
+}
+
+
+def inferir_tipo_doc(nro: str) -> str:
+    if nro.isdigit() and len(nro) == 8:
+        return "DNI"
+    if nro.isdigit() and len(nro) == 11:
+        return "RUC"
+    return "CE"
+
+
+def _texto(v) -> str:
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ""
+    s = str(v).strip().upper()
+    return "" if s in ("NAN", "NONE", "NAT") else (s[:-2] if s.endswith(".0") else s)
+
+
+def _inventario_por_series(series: list) -> dict:
+    res = {}
+    lista = list(series)
+    for i in range(0, len(lista), 900):
+        bloque = lista[i:i + 900]
+        params = {f"p{j}": s for j, s in enumerate(bloque)}
+        marc = ",".join(f":p{j}" for j in range(len(bloque)))
+        df = db.q(f"SELECT id, serie, tipo, marca, modelo, precio_compra, estado, fecha_compra "
+                  f"FROM inventario WHERE serie IN ({marc})", params)
+        for r in df.to_dict("records"):
+            res[r["serie"]] = r
+    return res
+
+
+def validar_ventas_masivo(df_raw: pd.DataFrame) -> pd.DataFrame:
+    """Valida el Excel de ventas. Devuelve el DataFrame con RESULTADO (OK/ERROR), MOTIVO y OBSERVACION."""
+    from core.utils import validar_documento
+    df = df_raw.copy()
+    df.columns = [ALIAS_VENTA.get(str(c).strip().upper().replace("  ", " "), str(c).strip().upper()) for c in df.columns]
+    faltan = [c for c in COLS_VENTA if c not in df.columns]
+    if faltan:
+        raise ValueError(f"Faltan columnas en el Excel: {', '.join(faltan)}. "
+                         f"Estructura requerida: {' - '.join(COLS_VENTA)}")
+    df = df[COLS_VENTA + [c for c in COLS_VENTA_OPC if c in df.columns]].dropna(how="all").copy()
+    for c in COLS_VENTA_OPC:
+        if c not in df.columns:
+            df[c] = ""
+    df["IMEI"] = df["IMEI"].map(limpiar_serie)
+    for c in ["CLIENTE", "DOCUMENTO", "MODELO", "MODALIDAD", "FORMA_PAGO", "BO", "MOTORIZADO", "TELEFONO"]:
+        df[c] = df[c].map(_texto)
+    df["DOCUMENTO"] = df["DOCUMENTO"].str.replace(r"[\s\-\.]", "", regex=True)
+    df["DOCUMENTO"] = df["DOCUMENTO"].map(lambda d: d.zfill(8) if d.isdigit() and len(d) == 7 else d)
+    df["FORMA_PAGO"] = df["FORMA_PAGO"].replace({"CUOTA": "CUOTAS", "CREDITO": "CUOTAS", "CRÉDITO": "CUOTAS",
+                                                   "CONTADO ": "CONTADO"})
+    df["PRECIO"] = pd.to_numeric(df["PRECIO"], errors="coerce")
+    df["N_CUOTAS"] = pd.to_numeric(df["N_CUOTAS"], errors="coerce")
+    df["FECHA"] = pd.to_datetime(df["FECHA"], errors="coerce", dayfirst=True, format="mixed").dt.date
+    df["TIPO_DOC"] = df["DOCUMENTO"].map(inferir_tipo_doc)
+
+    inv = _inventario_por_series(df["IMEI"].tolist())
+    dup = df["IMEI"].duplicated(keep="first")
+    bos_usados = set()
+    bos = [b for b in df["BO"].unique() if b]
+    if bos:
+        for i in range(0, len(bos), 900):
+            bloque = bos[i:i + 900]
+            params = {f"p{j}": b for j, b in enumerate(bloque)}
+            marc = ",".join(f":p{j}" for j in range(len(bloque)))
+            bos_usados |= set(db.q(f"SELECT bo FROM ventas WHERE estado='ACTIVA' AND bo IN ({marc})", params)["bo"])
+    dup_bo = df["BO"].ne("") & df["BO"].duplicated(keep="first")
+
+    res, mot, obs = [], [], []
+    extra = {"_item_id": [], "_tipo": [], "_marca": [], "_modelo_inv": [], "_precio_compra": []}
+    for idx, r in df.iterrows():
+        e, o = [], []
+        it = inv.get(r["IMEI"])
+        if not r["IMEI"]:
+            e.append("IMEI vacío")
+        elif it is None:
+            e.append("IMEI no existe en el inventario")
+        elif it["estado"] != "DISPONIBLE":
+            e.append(f"IMEI en estado {it['estado']}")
+        if dup.loc[idx]:
+            e.append("IMEI duplicado en el archivo")
+        if not r["CLIENTE"]:
+            e.append("Cliente vacío")
+        ok_doc, msg_doc = validar_documento(r["TIPO_DOC"], r["DOCUMENTO"])
+        if not ok_doc:
+            e.append(msg_doc)
+        if pd.isna(r["PRECIO"]) or r["PRECIO"] < 0:
+            e.append("Precio inválido")
+        if r["FECHA"] is None or pd.isna(r["FECHA"]):
+            e.append("Fecha inválida (use DD/MM/AAAA)")
+        elif r["FECHA"] > hoy():
+            e.append("Fecha futura")
+        elif it is not None and pd.notna(it["fecha_compra"]) and r["FECHA"] < pd.to_datetime(it["fecha_compra"]).date():
+            e.append("Fecha de venta anterior a la fecha de compra")
+        if not r["MODALIDAD"]:
+            e.append("Modalidad vacía")
+        if r["FORMA_PAGO"] not in ("CONTADO", "CUOTAS"):
+            e.append("Forma de pago debe ser CONTADO o CUOTAS")
+        elif r["FORMA_PAGO"] == "CUOTAS" and (pd.isna(r["N_CUOTAS"]) or r["N_CUOTAS"] < 1 or r["N_CUOTAS"] != int(r["N_CUOTAS"])):
+            e.append("N° de cuotas inválido (entero mayor a 0)")
+        if r["BO"] and (r["BO"] in bos_usados or dup_bo.loc[idx]):
+            e.append(f"BO {r['BO']} ya registrado")
+        if it is not None and r["MODELO"] and r["MODELO"] not in str(it["modelo"]).upper() \
+                and str(it["modelo"]).upper() not in r["MODELO"]:
+            o.append(f"Modelo del inventario: {it['modelo']}")
+        if it is not None and not pd.isna(r["PRECIO"]) and r["PRECIO"] < float(it["precio_compra"] or 0):
+            o.append(f"Bajo costo: NC esperada S/ {float(it['precio_compra']) - r['PRECIO']:,.2f}")
+        res.append("ERROR" if e else "OK")
+        mot.append("; ".join(e))
+        obs.append("; ".join(o))
+        extra["_item_id"].append(int(it["id"]) if it else None)
+        extra["_tipo"].append(it["tipo"] if it else None)
+        extra["_marca"].append(it["marca"] if it else None)
+        extra["_modelo_inv"].append(it["modelo"] if it else None)
+        extra["_precio_compra"].append(float(it["precio_compra"] or 0) if it else None)
+    df["RESULTADO"], df["MOTIVO"], df["OBSERVACION"] = res, mot, obs
+    for k, v in extra.items():
+        df[k] = v
+    return df
+
+
+def registrar_ventas_masivo(ok: pd.DataFrame, usuario: str) -> dict:
+    """Registra en bloque las ventas válidas, marca los IMEI como vendidos y crea los reclamos de NC."""
+    if ok.empty:
+        return {"ventas": 0, "reclamos": 0, "monto_nc": 0.0}
+    # revalidar disponibilidad justo antes de grabar
+    inv = _inventario_por_series(ok["IMEI"].tolist())
+    ok = ok[ok["IMEI"].map(lambda s: s in inv and inv[s]["estado"] == "DISPONIBLE")].copy()
+    ahora_ = ahora()
+    filas = []
+    for r in ok.to_dict("records"):
+        pc = float(r["_precio_compra"] or 0)
+        pv = float(r["PRECIO"])
+        filas.append({
+            "fecha_venta": r["FECHA"], "item_id": int(r["_item_id"]), "tipo": r["_tipo"], "tipo_doc": r["TIPO_DOC"],
+            "nro_doc": r["DOCUMENTO"], "cliente": r["CLIENTE"], "telefono": r["TELEFONO"], "marca": r["_marca"],
+            "modelo": r["_modelo_inv"], "serie": r["IMEI"], "precio_compra": pc, "precio_venta": pv,
+            "diferencia": round(pv - pc, 2), "bo": r["BO"], "motorizado": r["MOTORIZADO"], "modalidad": r["MODALIDAD"],
+            "forma_pago": r["FORMA_PAGO"], "nro_cuotas": int(r["N_CUOTAS"]) if r["FORMA_PAGO"] == "CUOTAS" else 0,
+            "comprobante": "", "estado": "ACTIVA", "observacion": "Importación masiva",
+            "usuario": usuario, "creado_en": ahora_,
+        })
+    if not filas:
+        return {"ventas": 0, "reclamos": 0, "monto_nc": 0.0}
+    item_ids = [f["item_id"] for f in filas]
+    with db.get_engine().begin() as cn:
+        for i in range(0, len(filas), 500):
+            cn.execute(db.ventas.insert(), filas[i:i + 500])
+        mapa = {}
+        for i in range(0, len(item_ids), 900):
+            bloque = item_ids[i:i + 900]
+            params = {f"p{j}": v for j, v in enumerate(bloque)}
+            marc = ",".join(f":p{j}" for j in range(len(bloque)))
+            for vid, iid, dif, serie, pv, pc in cn.execute(text(
+                    f"SELECT id, item_id, diferencia, serie, precio_venta, precio_compra FROM ventas "
+                    f"WHERE estado='ACTIVA' AND item_id IN ({marc})"), params):
+                mapa[iid] = (vid, dif, serie, pv, pc)
+            cn.execute(text(
+                f"UPDATE inventario SET estado='VENDIDO', fecha_venta=(SELECT v.fecha_venta FROM ventas v "
+                f"WHERE v.item_id=inventario.id AND v.estado='ACTIVA') WHERE id IN ({marc})"), params)
+        recl = [{"venta_id": vid, "serie": serie, "monto_esperado": abs(dif), "estado": "PENDIENTE NC",
+                 "nro_reclamos": 0, "creado_en": ahora_, "actualizado_en": ahora_}
+                for vid, dif, serie, pv, pc in mapa.values() if dif is not None and dif < 0]
+        if recl:
+            cn.execute(db.reclamos.insert(), recl)
+            vids = [x["venta_id"] for x in recl]
+            eventos = []
+            for i in range(0, len(vids), 900):
+                bloque = vids[i:i + 900]
+                params = {f"p{j}": v for j, v in enumerate(bloque)}
+                marc = ",".join(f":p{j}" for j in range(len(bloque)))
+                for rid, vid, monto in cn.execute(text(
+                        f"SELECT id, venta_id, monto_esperado FROM reclamos WHERE venta_id IN ({marc})"), params):
+                    eventos.append({"reclamo_id": rid, "fecha": ahora_, "usuario": usuario,
+                                    "accion": "Creado automático (importación)",
+                                    "detalle": f"Venta importada bajo costo. NC esperada S/ {monto:,.2f}"})
+            if eventos:
+                cn.execute(db.reclamo_eventos.insert(), eventos)
+    db.log(usuario, "Ventas", "Importación masiva", f"{len(filas)} ventas, {len(recl)} reclamos")
+    return {"ventas": len(filas), "reclamos": len(recl), "monto_nc": float(sum(x["monto_esperado"] for x in recl))}
+
+
+def plantilla_ventas() -> bytes:
+    import io
+    df = pd.DataFrame({
+        "CLIENTE": ["JUAN PEREZ QUISPE", "COMERCIAL ANDINA S.A.C."],
+        "DNI/CE/RUC": ["45879632", "20100017491"],
+        "MODELO": ["GALAXY A16 128GB", "REDMI NOTE 14 256GB"],
+        "IMEI": ["356938035643809", "490154203237518"],
+        "PRECIO": [649.00, 799.00],
+        "FECHA": [hoy().strftime("%d/%m/%Y")] * 2,
+        "MODALIDAD": ["PORTABILIDAD", "ALTA NUEVA"],
+        "CONTADO/CUOTAS": ["CONTADO", "CUOTAS"],
+        "#CUOTAS": [0, 12],
+        "BO": ["", ""],
+        "MOTORIZADO": ["", ""],
+    })
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="xlsxwriter") as xw:
+        df.to_excel(xw, sheet_name="VENTAS", index=False)
+        wb, ws = xw.book, xw.sheets["VENTAS"]
+        head = wb.add_format({"bold": True, "bg_color": "#0B1E3F", "font_color": "white", "border": 1})
+        opc = wb.add_format({"bold": True, "bg_color": "#64748B", "font_color": "white", "border": 1})
+        txt = wb.add_format({"num_format": "@"})
+        for i, c in enumerate(df.columns):
+            ws.write(0, i, c, opc if c in ("BO", "MOTORIZADO") else head)
+        ws.set_column(0, 0, 30)
+        ws.set_column(1, 1, 14, txt)
+        ws.set_column(2, 2, 24)
+        ws.set_column(3, 3, 20, txt)
+        ws.set_column(4, 10, 15)
+        for r in range(2):
+            ws.write_string(r + 1, 1, df.iloc[r]["DNI/CE/RUC"])
+            ws.write_string(r + 1, 3, df.iloc[r]["IMEI"])
+        ws.data_validation(1, 7, 5000, 7, {"validate": "list", "source": ["CONTADO", "CUOTAS"]})
+        nota = wb.add_worksheet("INSTRUCCIONES")
+        for i, l in enumerate([
+            "INSTRUCCIONES – IMPORTACIÓN MASIVA DE VENTAS",
+            "Columnas obligatorias: CLIENTE, DNI/CE/RUC, MODELO, IMEI, PRECIO, FECHA, MODALIDAD, CONTADO/CUOTAS, #CUOTAS.",
+            "Columnas opcionales (gris): BO y MOTORIZADO.",
+            "DNI/CE/RUC y IMEI deben estar en formato TEXTO para no perder ceros ni dígitos.",
+            "El tipo de documento se detecta solo: 8 dígitos = DNI, 11 dígitos = RUC, otro = CE.",
+            "FECHA en formato DD/MM/AAAA. MODALIDAD: PORTABILIDAD, ALTA NUEVA, RENOVACIÓN, etc.",
+            "CONTADO/CUOTAS: escriba CONTADO o CUOTAS. #CUOTAS: 0 si es contado; número de cuotas si es en cuotas.",
+            "El IMEI debe existir en el inventario y estar DISPONIBLE. Si el precio es menor al costo, se crea el reclamo de NC.",
+        ]):
+            nota.write(i, 0, l)
+        nota.set_column(0, 0, 120)
+    return buf.getvalue()

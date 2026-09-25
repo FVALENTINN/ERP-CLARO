@@ -91,6 +91,9 @@ ventas = Table(
     Column("diferencia", Float),                        # venta - compra (negativo = pérdida → NC)
     Column("bo", String(40)),                           # Business Order Claro
     Column("motorizado", String(100)),
+    Column("modalidad", String(30)),                    # PORTABILIDAD, ALTA NUEVA, RENOVACIÓN...
+    Column("forma_pago", String(10)),                   # CONTADO / CUOTAS
+    Column("nro_cuotas", Integer),
     Column("comprobante", String(40)),
     Column("factura_claro", String(40)),                # factura que emite Claro luego de la venta
     Column("monto_factura_claro", Float),
@@ -191,12 +194,26 @@ def get_engine():
         kwargs["connect_args"] = {"check_same_thread": False}
     engine = create_engine(url, **kwargs)
     metadata.create_all(engine)
+    _migrar(engine)
     _seed(engine)
     return engine
 
 
 def es_postgres():
     return get_engine().dialect.name == "postgresql"
+
+
+def _migrar(engine):
+    """Agrega columnas nuevas a tablas ya existentes (bases creadas con versiones anteriores)."""
+    from sqlalchemy import inspect
+    nuevas = {"ventas": {"modalidad": "VARCHAR(30)", "forma_pago": "VARCHAR(10)", "nro_cuotas": "INTEGER"}}
+    insp = inspect(engine)
+    with engine.begin() as cn:
+        for tabla, cols in nuevas.items():
+            actuales = {c["name"] for c in insp.get_columns(tabla)}
+            for col, tipo in cols.items():
+                if col not in actuales:
+                    cn.execute(text(f"ALTER TABLE {tabla} ADD COLUMN {col} {tipo}"))
 
 
 def _seed(engine):
