@@ -145,6 +145,7 @@ def plantilla_importacion() -> bytes:
         "IMEI": ["356938035643809", "490154203237518"],
         "PRECIO": [599.00, 529.00],
         "N_FACTURA": ["F001-000123", "F001-000123"],
+        "CATEGORIA": ["MOVIL", "IFI"],
     })
     with pd.ExcelWriter(buf, engine="xlsxwriter") as xw:
         df.to_excel(xw, sheet_name="IMEIS", index=False)
@@ -158,6 +159,8 @@ def plantilla_importacion() -> bytes:
         ws.set_column(2, 2, 22, txt)   # IMEI como TEXTO para no perder dígitos
         ws.set_column(3, 3, 12)
         ws.set_column(4, 4, 16, txt)
+        ws.set_column(5, 5, 14)
+        ws.data_validation(1, 5, 20000, 5, {"validate": "list", "source": ["MOVIL", "IFI", "TFI", "OLO"]})
         for r in range(1, 3):
             ws.write_string(r, 2, df.iloc[r - 1]["IMEI"])
         nota = wb.add_worksheet("INSTRUCCIONES")
@@ -168,6 +171,7 @@ def plantilla_importacion() -> bytes:
             "3. PRECIO = precio de compra a Claro por unidad (sin símbolo S/).",
             "4. N_FACTURA = número de factura o guía de remisión del ingreso.",
             "5. La fecha de compra y el tipo (EQUIPO / SIM) se eligen en el sistema al importar.",
+            "5b. CATEGORIA (opcional): MOVIL, IFI, TFI u OLO. Si se deja vacía se usa la categoría elegida en pantalla.",
             "6. El sistema rechaza IMEI duplicados, con longitud incorrecta o dígito verificador inválido.",
             "7. Puede importar miles de registros en un solo archivo.",
         ]

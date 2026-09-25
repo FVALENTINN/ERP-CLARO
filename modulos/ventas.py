@@ -29,7 +29,7 @@ def importar_ventas(u):
         st.success(msg)
     c = st.columns([2, 1])
     c[0].markdown("Estructura del Excel: **CLIENTE – DNI/CE/RUC – MODELO – IMEI – PRECIO – FECHA – MODALIDAD – "
-                  "CONTADO/CUOTAS – #CUOTAS**. Opcionales: BO y MOTORIZADO.")
+                  "CONTADO/CUOTAS – #CUOTAS**. Opcionales: I. COBRADO, BO y MOTORIZADO.")
     c[1].download_button("⬇️ Descargar plantilla", sv.plantilla_ventas(), "plantilla_ventas.xlsx", width="stretch")
     with st.form("impv_form"):
         archivo = st.file_uploader("Archivo Excel (.xlsx) o CSV con las ventas", type=["xlsx", "xls", "csv"])
@@ -51,7 +51,7 @@ def importar_ventas(u):
     err = res[res["RESULTADO"] == "ERROR"]
     bajo = ok[ok["PRECIO"] < ok["_precio_compra"]]
     visibles = ["CLIENTE", "TIPO_DOC", "DOCUMENTO", "MODELO", "IMEI", "PRECIO", "FECHA", "MODALIDAD", "FORMA_PAGO",
-                "N_CUOTAS", "BO", "MOTORIZADO", "RESULTADO", "MOTIVO", "OBSERVACION"]
+                "N_CUOTAS", "I_COBRADO", "BO", "MOTORIZADO", "RESULTADO", "MOTIVO", "OBSERVACION"]
     st.markdown(f"##### Resultado de validación – {imp['archivo']}")
     m = st.columns(4)
     m[0].metric("Ventas leídas", f"{len(res):,}")
@@ -138,8 +138,12 @@ def render():
                     forma_pago = c[1].selectbox("Contado / Cuotas", ["CONTADO", "CUOTAS"])
                     nro_cuotas = c[2].number_input("N° de cuotas", min_value=0, max_value=60, step=1, value=0,
                                                    help="0 si es al contado")
-                    comprobante = c[3].text_input("Comprobante (opcional)")
-                    obs = st.text_input("Observación")
+                    cobrado = c[3].number_input("I. cobrado (S/)", min_value=0.0, step=1.0,
+                                                value=float(item["precio_compra"]),
+                                                help="Importe que se cobró al cliente por el equipo")
+                    c = st.columns([1, 3])
+                    comprobante = c[0].text_input("Comprobante (opcional)")
+                    obs = c[1].text_input("Observación")
                     enviar = st.form_submit_button("💾 Registrar venta", type="primary")
                 if enviar:
                     errores = []
@@ -172,6 +176,7 @@ def render():
                             "motorizado": str(motorizado).strip().upper(), "comprobante": comprobante.strip().upper(),
                             "observacion": obs, "modalidad": str(modalidad).strip().upper(),
                             "forma_pago": forma_pago, "nro_cuotas": int(nro_cuotas) if forma_pago == "CUOTAS" else 0,
+                            "importe_cobrado": cobrado,
                         }, u["username"])
                         info = {"msg": f"✅ Venta #{r['venta_id']} registrada – IMEI {item['serie']}."}
                         if r["diferencia"] < 0:
@@ -193,7 +198,10 @@ def render():
         d2 = c[1].date_input("Hasta", hoy(), format="DD/MM/YYYY", key="lv2")
         filtro = c[2].selectbox("Resultado", ["Todas", "Bajo costo (NC)", "Sobre costo", "Igual al costo"])
         texto = c[3].text_input("Buscar cliente / DNI / IMEI / BO / modelo")
-        v = db.q("SELECT * FROM ventas WHERE fecha_venta BETWEEN :d AND :h ORDER BY id DESC", {"d": d1, "h": d2})
+        v = db.q("""SELECT v.*, i.categoria FROM ventas v LEFT JOIN inventario i ON i.id = v.item_id
+                    WHERE v.fecha_venta BETWEEN :d AND :h ORDER BY v.id DESC""", {"d": d1, "h": d2})
+        if not v.empty:
+            v["categoria"] = v["categoria"].map({**sv.CATEGORIAS, "SIM": "SIM card"}).fillna("Equipos móviles")
         if v.empty:
             st.info("Sin ventas en el periodo.")
         else:
@@ -210,22 +218,24 @@ def render():
                     mask |= v[col].fillna("").astype(str).str.upper().str.contains(t, regex=False)
                 v = v[mask]
             act = v[v["estado"] == "ACTIVA"]
-            m = st.columns(4)
+            m = st.columns(5)
             m[0].metric("Ventas activas", f"{len(act):,}")
             m[1].metric("Total vendido", soles0(act["precio_venta"].sum()))
-            m[2].metric("Costo", soles0(act["precio_compra"].sum()))
-            m[3].metric("Diferencia (venta − costo)", soles0(act["diferencia"].sum()))
-            vista = v[["id", "fecha_venta", "estado", "tipo", "tipo_doc", "nro_doc", "cliente", "marca", "modelo",
-                       "serie", "precio_compra", "precio_venta", "diferencia", "modalidad", "forma_pago",
+            m[2].metric("I. cobrado", soles0(pd.to_numeric(act["importe_cobrado"], errors="coerce").sum()))
+            m[3].metric("Costo", soles0(act["precio_compra"].sum()))
+            m[4].metric("Diferencia (venta − costo)", soles0(act["diferencia"].sum()))
+            vista = v[["id", "fecha_venta", "estado", "categoria", "tipo_doc", "nro_doc", "cliente", "marca", "modelo",
+                       "serie", "precio_compra", "precio_venta", "importe_cobrado", "diferencia", "modalidad", "forma_pago",
                        "nro_cuotas", "bo", "motorizado", "factura_claro",
                        "monto_factura_claro", "comprobante", "usuario"]]
-            vista.columns = ["N°", "Fecha", "Estado", "Tipo", "Doc", "N° doc", "Cliente", "Marca", "Modelo",
-                             "IMEI/ICCID", "P. compra", "P. venta", "Diferencia", "Modalidad", "Contado/Cuotas",
+            vista.columns = ["N°", "Fecha", "Estado", "Categoría", "Doc", "N° doc", "Cliente", "Marca", "Modelo",
+                             "IMEI/ICCID", "P. compra", "P. venta", "I. cobrado", "Diferencia", "Modalidad", "Contado/Cuotas",
                              "N° cuotas", "BO", "Motorizado",
                              "Fact. Claro", "Monto fact. Claro", "Comprobante", "Usuario"]
             money = st.column_config.NumberColumn(format="S/ %.2f")
             st.dataframe(vista, hide_index=True, column_config={
-                "P. compra": money, "P. venta": money, "Diferencia": money, "Monto fact. Claro": money,
+                "P. compra": money, "P. venta": money, "I. cobrado": money, "Diferencia": money,
+                "Monto fact. Claro": money,
                 "Fecha": st.column_config.DateColumn(format="DD/MM/YYYY")})
             st.download_button("⬇️ Descargar ventas", to_excel({"Ventas": vista}), f"ventas_{d1}_{d2}.xlsx")
             if puede("anular_venta"):

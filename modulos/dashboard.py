@@ -46,6 +46,11 @@ ICONOS_SVG = {
     "alerta": '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
     "recibo": '<path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z"/><path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"/><path d="M12 17.5v-11"/>',
     "correo": '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>',
+    "casa": '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>',
+    "caja": '<path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>',
+    "wifi": '<path d="M12 20h.01"/><path d="M2 8.82a15 15 0 0 1 20 0"/><path d="M5 12.859a10 10 0 0 1 14 0"/><path d="M8.5 16.429a5 5 0 0 1 7 0"/>',
+    "telefono": '<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/>',
+    "router": '<rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6.01 18H6"/><path d="M10.01 18H10"/><path d="M15 10v4"/><path d="M17.84 7.17a4 4 0 0 0-5.66 0"/><path d="M20.66 4.34a8 8 0 0 0-11.31 0"/>',
 }
 TONOS = {  # (color del ícono, fondo suave)
     "azul": (AZUL, "#E8F1FD"), "cian": ("#0E9DB3", "#E3F7FA"), "verde": ("#16A34A", "#E7F8EE"),
@@ -82,7 +87,8 @@ def render():
     cfg = db.get_config()
     inv = sv.inventario_df()
     disp = inv[inv["estado"] == "DISPONIBLE"] if not inv.empty else inv
-    ventas = db.q("SELECT * FROM ventas WHERE estado='ACTIVA'")
+    ventas = db.q("""SELECT v.*, COALESCE(i.categoria, CASE WHEN v.tipo='SIM' THEN 'SIM' ELSE 'MOVIL' END) AS categoria
+                     FROM ventas v LEFT JOIN inventario i ON i.id = v.item_id WHERE v.estado='ACTIVA'""")
     rec = sv.reclamos_df()
 
     hoy_ts = pd.Timestamp(hoy())
@@ -98,14 +104,27 @@ def render():
     abiertos = rec[~rec["estado"].isin(["NC RECIBIDA", "CERRADO", "ANULADO"])] if not rec.empty else rec
     para_reclamar = abiertos[abiertos["accion_sugerida"] == "📧 RECLAMAR"] if not abiertos.empty else abiertos
 
-    vend_hoy = int((ventas["fecha_venta"] == hoy_ts).sum()) if not ventas.empty else 0
     perd_mes = ventas_mes[ventas_mes["diferencia"] < 0] if not ventas_mes.empty else ventas_mes
+    propios = eq[eq["modalidad"] == "COMPRA DIRECTA"] if not eq.empty else eq
+    consig = eq[eq["modalidad"] != "COMPRA DIRECTA"] if not eq.empty else eq
     c = st.columns(4)
-    kpi(c[0], "Equipos en stock", f"{len(eq):,}", "equipo", "azul", f"{eq['modelo'].nunique() if not eq.empty else 0} modelos distintos")
+    kpi(c[0], "Equipos en stock", f"{len(eq):,}", "equipo", "azul",
+        f"{eq['modelo'].nunique() if not eq.empty else 0} modelos · {soles0(eq['precio_compra'].sum() if not eq.empty else 0)}")
     kpi(c[1], "SIM card en stock", f"{len(sim):,}", "sim", "cian", "Disponibles para venta")
-    kpi(c[2], "Valor del inventario", soles0(disp["precio_compra"].sum() if not disp.empty else 0), "dinero", "indigo",
-        "A precio de compra")
-    kpi(c[3], "Ventas del mes", f"{len(ventas_mes):,}", "ventas", "verde", f"▲ {vend_hoy} vendidas hoy", "up")
+    kpi(c[2], "Equipos propios", f"{len(propios):,}", "casa", "verde",
+        f"Compra directa · {soles0(propios['precio_compra'].sum() if len(propios) else 0)}")
+    kpi(c[3], "Equipos consignación", f"{len(consig):,}", "caja", "indigo",
+        f"De Claro · {soles0(consig['precio_compra'].sum() if len(consig) else 0)}")
+    cat_stock = eq["categoria"].value_counts() if not eq.empty and "categoria" in eq else pd.Series(dtype=int)
+    c = st.columns(4)
+    for col, (cod, nombre, icono, tono) in zip(c, [("MOVIL", "Equipos móviles", "equipo", "azul"),
+                                                    ("IFI", "Equipos IFI", "wifi", "cian"),
+                                                    ("TFI", "Equipos TFI", "telefono", "naranja"),
+                                                    ("OLO", "Equipos OLO", "router", "indigo")]):
+        vend_cat = 0
+        if not ventas_mes.empty and "categoria" in ventas_mes:
+            vend_cat = int((ventas_mes["categoria"] == cod).sum())
+        kpi(col, nombre, f"{int(cat_stock.get(cod, 0)):,}", icono, tono, f"{vend_cat} vendidos en el mes")
     c = st.columns(4)
     kpi(c[0], f"Por vencer (≤{cfg['dias_alerta']} días)", f"{len(por_vencer):,}", "reloj", "naranja",
         soles0(por_vencer["precio_compra"].sum() if len(por_vencer) else 0) + " en riesgo")
@@ -116,6 +135,31 @@ def render():
     kpi(c[3], "Listos para reclamar", f"{len(para_reclamar):,}", "correo", "naranja",
         f"{len(perd_mes)} ventas bajo costo (mes)")
     st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+
+    # ------------------------------------------------ línea de tiempo anual
+    with st.container(border=True):
+        anio = hoy().year
+        titulo_card(f"Equipos vendidos por mes – {anio}", "Unidades vendidas de enero a diciembre, por categoría")
+        meses = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Set", "Oct", "Nov", "Dic"]
+        ve = ventas[(ventas["tipo"] == "EQUIPO") & (ventas["fecha_venta"].dt.year == anio)] if not ventas.empty else ventas
+        fig = go.Figure()
+        if not ve.empty:
+            tabla = ve.groupby([ve["fecha_venta"].dt.month, "categoria"]).size().unstack(fill_value=0) \
+                .reindex(range(1, 13), fill_value=0)
+            colores = {"MOVIL": AZUL, "IFI": CIAN, "TFI": NARANJA, "OLO": "#6366F1"}
+            for cod in ["MOVIL", "IFI", "TFI", "OLO"]:
+                if cod in tabla.columns and tabla[cod].sum() > 0:
+                    fig.add_trace(go.Bar(x=meses, y=tabla[cod], name=sv.CATEGORIAS[cod], marker_color=colores[cod],
+                                         opacity=.85))
+            total = tabla.sum(axis=1)
+        else:
+            total = pd.Series([0] * 12, index=range(1, 13))
+        fig.add_trace(go.Scatter(x=meses, y=total.values, name="Total", mode="lines+markers+text",
+                                 line=dict(color=NAVY, width=3), marker=dict(size=8),
+                                 text=[f"{int(t)}" if t else "" for t in total.values], textposition="top center"))
+        fig.update_layout(barmode="stack")
+        fig.update_yaxes(rangemode="tozero")
+        st.plotly_chart(estilo(fig, 330, leyenda=True), width="stretch", config=CFG)
 
     if inv.empty:
         st.info("Aún no hay inventario registrado. Empiece en **Compras** importando su Excel de IMEI.")

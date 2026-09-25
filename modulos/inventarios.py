@@ -9,7 +9,7 @@ from core.utils import hoy, limpiar_serie, soles0, to_excel, validar_serie
 from modulos.dashboard import encabezado
 
 COLS_STOCK = {
-    "tipo": "Tipo", "marca": "Marca", "modelo": "Modelo", "serie": "IMEI / ICCID",
+    "tipo": "Tipo", "categoria_txt": "Categoría", "marca": "Marca", "modelo": "Modelo", "serie": "IMEI / ICCID",
     "precio_compra": "Precio compra", "nro_factura": "N° factura/guía", "fecha_compra": "Fecha compra",
     "dias_stock": "Días en stock", "fecha_limite": "Fecha límite", "dias_restantes": "Días restantes",
     "alerta": "Alerta", "estado": "Estado", "fecha_venta": "Fecha salida", "modalidad": "Modalidad",
@@ -44,16 +44,24 @@ def render():
         if inv.empty:
             st.info("No hay inventario. Registre ingresos en el módulo **Compras**.")
         else:
-            f = st.columns([1, 1, 1.4, 1, 1.4])
+            f = st.columns([1, 1.2, 1, 1.3, 1, 1, 1.4])
             tipo = f[0].selectbox("Tipo", ["Todos", "EQUIPO", "SIM"])
-            estado = f[1].selectbox("Estado", ["DISPONIBLE", "Todos", "VENDIDO", "DEVUELTO", "BAJA"])
+            cat = f[1].selectbox("Categoría", ["Todas"] + list(sv.CATEGORIAS),
+                                 format_func=lambda k: sv.CATEGORIAS.get(k, k))
+            estado = f[2].selectbox("Estado", ["DISPONIBLE", "Todos", "VENDIDO", "DEVUELTO", "BAJA"])
             marcas = sorted(inv["marca"].dropna().unique())
-            marca = f[2].multiselect("Marca", marcas, placeholder="Todas")
-            alerta = f[3].selectbox("Alerta", ["Todas", "🟢 EN PLAZO", "🟠 POR VENCER", "🔴 VENCIDO"])
-            texto = f[4].text_input("Buscar modelo / IMEI / factura")
+            marca = f[3].multiselect("Marca", marcas, placeholder="Todas")
+            propiedad = f[4].selectbox("Propiedad", ["Todos", "CONSIGNACION", "COMPRA DIRECTA"],
+                                       format_func=lambda k: {"COMPRA DIRECTA": "Propios", "CONSIGNACION": "Consignación"}.get(k, k))
+            alerta = f[5].selectbox("Alerta", ["Todas", "🟢 EN PLAZO", "🟠 POR VENCER", "🔴 VENCIDO"])
+            texto = f[6].text_input("Buscar modelo / IMEI / factura")
             d = inv.copy()
             if tipo != "Todos":
                 d = d[d["tipo"] == tipo]
+            if cat != "Todas":
+                d = d[d["categoria"] == cat]
+            if propiedad != "Todos":
+                d = d[d["modalidad"] == propiedad]
             if estado != "Todos":
                 d = d[d["estado"] == estado]
             if marca:
@@ -68,13 +76,13 @@ def render():
 
             vista_modelo = st.toggle("Ver resumen por modelo", value=True)
             if vista_modelo:
-                r = d.groupby(["tipo", "marca", "modelo"]).agg(
+                r = d.groupby(["categoria_txt", "marca", "modelo"]).agg(
                     Unidades=("serie", "size"), Valor=("precio_compra", "sum"),
                     Precio_prom=("precio_compra", "mean"), Dias_max=("dias_stock", "max"),
                     Por_vencer=("alerta", lambda s: (s == "🟠 POR VENCER").sum()),
                     Vencidos=("alerta", lambda s: (s == "🔴 VENCIDO").sum()),
                 ).reset_index().sort_values("Unidades", ascending=False)
-                r.columns = ["Tipo", "Marca", "Modelo", "Unidades", "Valor costo", "Precio prom.",
+                r.columns = ["Categoría", "Marca", "Modelo", "Unidades", "Valor costo", "Precio prom.",
                              "Días máx.", "Por vencer", "Vencidos"]
                 st.dataframe(r, hide_index=True, column_config={
                     "Valor costo": st.column_config.NumberColumn(format="S/ %.2f"),
@@ -258,17 +266,21 @@ def render():
                         precio = c[1].number_input("Precio compra", value=float(item["precio_compra"]), min_value=0.0,
                                                    step=1.0)
                         fecha = c[2].date_input("Fecha del movimiento", hoy(), format="DD/MM/YYYY")
-                        c2 = st.columns(2)
+                        c2 = st.columns(3)
                         modelo = c2[0].text_input("Modelo", item["modelo"])
                         marca = c2[1].text_input("Marca", item["marca"])
+                        cats = list(sv.CATEGORIAS) if item["tipo"] == "EQUIPO" else ["SIM"]
+                        categoria = c2[2].selectbox("Categoría", cats, format_func=lambda k: sv.CATEGORIAS.get(k, k),
+                                                    index=cats.index(item["categoria"]) if item.get("categoria") in cats else 0)
                         obs = st.text_input("Motivo / observación (obligatorio)")
                         if st.form_submit_button("Guardar ajuste", type="primary"):
                             if not obs.strip():
                                 st.error("Indique el motivo del ajuste.")
                             else:
                                 db.execute("""UPDATE inventario SET estado=:e, precio_compra=:p, modelo=:mo, marca=:ma,
-                                              fecha_venta=:f, observacion=:o WHERE id=:i""",
+                                              categoria=:c, fecha_venta=:f, observacion=:o WHERE id=:i""",
                                            {"e": nuevo, "p": precio, "mo": modelo.upper(), "ma": marca.upper(),
+                                            "c": categoria,
                                             "f": None if nuevo == "DISPONIBLE" else fecha, "o": obs,
                                             "i": int(item["id"])})
                                 db.log(usuario_actual()["username"], "Inventarios", "Ajuste",

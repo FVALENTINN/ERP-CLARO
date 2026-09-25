@@ -8,12 +8,29 @@ from core import db
 from core.utils import ahora, hoy, limpiar_serie, parse_fecha, validar_serie
 
 COLS_IMPORT = ["MODELO", "MARCA", "IMEI", "PRECIO", "N_FACTURA"]
+CATEGORIAS = {"MOVIL": "Equipos móviles", "IFI": "Equipos IFI", "TFI": "Equipos TFI", "OLO": "Equipos OLO"}
+
+
+def normalizar_categoria(v, defecto="MOVIL"):
+    """Convierte textos como 'Equipo móvil', 'IFI', 'tfi' al código de categoría."""
+    import unicodedata
+    s = "" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v)
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().upper().strip()
+    if not s or s in ("NAN", "NONE"):
+        return defecto
+    for cod in ("IFI", "TFI", "OLO"):
+        if cod in s.split() or s == cod or s.endswith(" " + cod):
+            return cod
+    if "MOVIL" in s or "CELULAR" in s or "SMARTPHONE" in s:
+        return "MOVIL"
+    return s if s in CATEGORIAS else None
 ALIAS_COLS = {
     "MODELO": "MODELO", "MARCA": "MARCA", "IMEI": "IMEI", "ICCID": "IMEI", "SERIE": "IMEI",
     "IMEI/ICCID": "IMEI", "PRECIO": "PRECIO", "PRECIO COMPRA": "PRECIO", "PRECIO_COMPRA": "PRECIO",
     "N_FACTURA": "N_FACTURA", "# FACTURA": "N_FACTURA", "#FACTURA": "N_FACTURA", "N° FACTURA": "N_FACTURA",
     "NRO FACTURA": "N_FACTURA", "NRO_FACTURA": "N_FACTURA", "FACTURA": "N_FACTURA", "N FACTURA": "N_FACTURA",
     "NUMERO FACTURA": "N_FACTURA", "Nº FACTURA": "N_FACTURA",
+    "CATEGORIA": "CATEGORIA", "CATEGORÍA": "CATEGORIA", "TIPO EQUIPO": "CATEGORIA", "LINEA": "CATEGORIA",
 }
 
 
@@ -36,6 +53,10 @@ def enriquecer_aging(df: pd.DataFrame) -> pd.DataFrame:
         for c in ["dias_stock", "fecha_limite", "dias_restantes", "alerta"]:
             df[c] = pd.Series(dtype="object")
         return df
+    if "categoria" in df.columns:
+        df["categoria"] = df["categoria"].where(df["categoria"].notna() & (df["categoria"] != ""),
+                                                df["tipo"].map({"SIM": "SIM"}).fillna("MOVIL"))
+        df["categoria_txt"] = df["categoria"].map({**CATEGORIAS, "SIM": "SIM card"}).fillna(df["categoria"])
     df["fecha_compra"] = pd.to_datetime(df["fecha_compra"], errors="coerce")
     df["fecha_venta"] = pd.to_datetime(df["fecha_venta"], errors="coerce")
     ref = pd.Timestamp(hoy())
@@ -87,20 +108,24 @@ def normalizar_columnas(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns=nuevas)
 
 
-def validar_importacion(df_raw: pd.DataFrame, tipo: str) -> pd.DataFrame:
-    """Devuelve el DataFrame con columnas RESULTADO (OK/ERROR) y MOTIVO."""
+def validar_importacion(df_raw: pd.DataFrame, tipo: str, categoria: str = "MOVIL") -> pd.DataFrame:
+    """Devuelve el DataFrame con columnas RESULTADO (OK/ERROR) y MOTIVO.
+    La columna CATEGORIA es opcional; si no viene se usa la categoría elegida en pantalla."""
     df = normalizar_columnas(df_raw.copy())
     faltan = [c for c in COLS_IMPORT if c not in df.columns]
     if faltan:
         raise ValueError(f"Faltan columnas en el Excel: {', '.join(faltan)}. "
                          f"Estructura requerida: {' - '.join(COLS_IMPORT)}")
-    df = df[COLS_IMPORT].copy()
+    if "CATEGORIA" not in df.columns:
+        df["CATEGORIA"] = ""
+    df = df[COLS_IMPORT + ["CATEGORIA"]].copy()
     df = df.dropna(how="all")
     df["IMEI"] = df["IMEI"].map(limpiar_serie)
     df["MODELO"] = df["MODELO"].fillna("").astype(str).str.strip().str.upper()
     df["MARCA"] = df["MARCA"].fillna("").astype(str).str.strip().str.upper()
     df["N_FACTURA"] = df["N_FACTURA"].fillna("").astype(str).str.strip().str.upper().str.replace(r"\.0$", "", regex=True)
     df["PRECIO"] = pd.to_numeric(df["PRECIO"], errors="coerce")
+    df["CATEGORIA"] = ("SIM" if tipo == "SIM" else df["CATEGORIA"].map(lambda v: normalizar_categoria(v, categoria)))
 
     existentes = series_existentes(df["IMEI"].tolist())
     duplicados_archivo = df["IMEI"].duplicated(keep="first")
@@ -120,6 +145,8 @@ def validar_importacion(df_raw: pd.DataFrame, tipo: str) -> pd.DataFrame:
             errores.append("Marca vacía")
         if pd.isna(r["PRECIO"]) or r["PRECIO"] < 0:
             errores.append("Precio inválido")
+        if tipo == "EQUIPO" and r["CATEGORIA"] not in CATEGORIAS:
+            errores.append("Categoría inválida (use MÓVIL, IFI, TFI u OLO)")
         resultados.append("ERROR" if errores else "OK")
         motivos.append("; ".join(errores) if errores else "")
     df["RESULTADO"] = resultados
@@ -144,6 +171,7 @@ def registrar_compra(items: pd.DataFrame, tipo: str, fecha_compra: date, modalid
             "tipo": tipo, "marca": r.MARCA, "modelo": r.MODELO, "serie": r.IMEI,
             "precio_compra": float(r.PRECIO), "nro_factura": r.N_FACTURA or nro_documento,
             "fecha_compra": fecha_compra, "modalidad": modalidad, "lote_id": lote_id,
+            "categoria": ("SIM" if tipo == "SIM" else (getattr(r, "CATEGORIA", "") or "MOVIL")),
             "estado": "DISPONIBLE", "creado_por": usuario, "creado_en": ahora(),
         } for r in items.itertuples(index=False)]
         for i in range(0, len(filas), 1000):
@@ -182,6 +210,7 @@ def registrar_venta(datos: dict, usuario: str) -> dict:
             diferencia=diferencia, bo=datos.get("bo", ""), motorizado=datos.get("motorizado", ""),
             modalidad=datos.get("modalidad", ""), forma_pago=datos.get("forma_pago", "CONTADO"),
             nro_cuotas=int(datos.get("nro_cuotas", 0) or 0),
+            importe_cobrado=float(datos.get("importe_cobrado", 0) or 0),
             comprobante=datos.get("comprobante", ""), estado="ACTIVA",
             observacion=datos.get("observacion", ""), usuario=usuario, creado_en=ahora(),
         ))
@@ -422,7 +451,7 @@ def kardex_df(desde: date, hasta: date) -> pd.DataFrame:
 
 # =================================================================== VENTAS MASIVAS (EXCEL)
 COLS_VENTA = ["CLIENTE", "DOCUMENTO", "MODELO", "IMEI", "PRECIO", "FECHA", "MODALIDAD", "FORMA_PAGO", "N_CUOTAS"]
-COLS_VENTA_OPC = ["BO", "MOTORIZADO", "TELEFONO"]
+COLS_VENTA_OPC = ["I_COBRADO", "BO", "MOTORIZADO", "TELEFONO"]
 ALIAS_VENTA = {
     "CLIENTE": "CLIENTE", "NOMBRE": "CLIENTE", "RAZON SOCIAL": "CLIENTE", "NOMBRE / RAZON SOCIAL": "CLIENTE",
     "DOCUMENTO": "DOCUMENTO", "DNI/CE/RUC": "DOCUMENTO", "DNI / CE / RUC": "DOCUMENTO", "DNI": "DOCUMENTO",
@@ -437,6 +466,9 @@ ALIAS_VENTA = {
     "N_CUOTAS": "N_CUOTAS", "#CUOTAS": "N_CUOTAS", "# CUOTAS": "N_CUOTAS", "N° CUOTAS": "N_CUOTAS",
     "NRO CUOTAS": "N_CUOTAS", "NRO_CUOTAS": "N_CUOTAS", "CUOTAS": "N_CUOTAS", "NUMERO DE CUOTAS": "N_CUOTAS",
     "BO": "BO", "MOTORIZADO": "MOTORIZADO", "TELEFONO": "TELEFONO", "TELÉFONO": "TELEFONO",
+    "I_COBRADO": "I_COBRADO", "I. COBRADO": "I_COBRADO", "I.COBRADO": "I_COBRADO", "I COBRADO": "I_COBRADO",
+    "IMPORTE COBRADO": "I_COBRADO", "IMPORTE_COBRADO": "I_COBRADO", "COBRADO": "I_COBRADO",
+    "MONTO COBRADO": "I_COBRADO",
 }
 
 
@@ -491,6 +523,7 @@ def validar_ventas_masivo(df_raw: pd.DataFrame) -> pd.DataFrame:
                                                    "CONTADO ": "CONTADO"})
     df["PRECIO"] = pd.to_numeric(df["PRECIO"], errors="coerce")
     df["N_CUOTAS"] = pd.to_numeric(df["N_CUOTAS"], errors="coerce")
+    df["I_COBRADO"] = pd.to_numeric(df["I_COBRADO"].replace("", None), errors="coerce")
     df["FECHA"] = df["FECHA"].map(parse_fecha)
     df["TIPO_DOC"] = df["DOCUMENTO"].map(inferir_tipo_doc)
 
@@ -539,6 +572,8 @@ def validar_ventas_masivo(df_raw: pd.DataFrame) -> pd.DataFrame:
             e.append("Forma de pago debe ser CONTADO o CUOTAS")
         elif r["FORMA_PAGO"] == "CUOTAS" and (pd.isna(r["N_CUOTAS"]) or r["N_CUOTAS"] < 1 or r["N_CUOTAS"] != int(r["N_CUOTAS"])):
             e.append("N° de cuotas inválido (entero mayor a 0)")
+        if not pd.isna(r["I_COBRADO"]) and r["I_COBRADO"] < 0:
+            e.append("I. cobrado inválido")
         if r["BO"] and (r["BO"] in bos_usados or dup_bo.loc[idx]):
             e.append(f"BO {r['BO']} ya registrado")
         if it is not None and r["MODELO"] and r["MODELO"] not in str(it["modelo"]).upper() \
@@ -578,6 +613,8 @@ def registrar_ventas_masivo(ok: pd.DataFrame, usuario: str) -> dict:
             "modelo": r["_modelo_inv"], "serie": r["IMEI"], "precio_compra": pc, "precio_venta": pv,
             "diferencia": round(pv - pc, 2), "bo": r["BO"], "motorizado": r["MOTORIZADO"], "modalidad": r["MODALIDAD"],
             "forma_pago": r["FORMA_PAGO"], "nro_cuotas": int(r["N_CUOTAS"]) if r["FORMA_PAGO"] == "CUOTAS" else 0,
+            "importe_cobrado": (float(r["I_COBRADO"]) if not pd.isna(r["I_COBRADO"])
+                                else (pv if r["FORMA_PAGO"] == "CONTADO" else 0.0)),
             "comprobante": "", "estado": "ACTIVA", "observacion": "Importación masiva",
             "usuario": usuario, "creado_en": ahora_,
         })
@@ -633,6 +670,7 @@ def plantilla_ventas() -> bytes:
         "MODALIDAD": ["PORTABILIDAD", "ALTA NUEVA"],
         "CONTADO/CUOTAS": ["CONTADO", "CUOTAS"],
         "#CUOTAS": [0, 12],
+        "I. COBRADO": [649.00, 150.00],
         "BO": ["", ""],
         "MOTORIZADO": ["", ""],
     })
@@ -644,12 +682,12 @@ def plantilla_ventas() -> bytes:
         opc = wb.add_format({"bold": True, "bg_color": "#64748B", "font_color": "white", "border": 1})
         txt = wb.add_format({"num_format": "@"})
         for i, c in enumerate(df.columns):
-            ws.write(0, i, c, opc if c in ("BO", "MOTORIZADO") else head)
+            ws.write(0, i, c, opc if c in ("I. COBRADO", "BO", "MOTORIZADO") else head)
         ws.set_column(0, 0, 30)
         ws.set_column(1, 1, 14, txt)
         ws.set_column(2, 2, 24)
         ws.set_column(3, 3, 20, txt)
-        ws.set_column(4, 10, 15)
+        ws.set_column(4, 11, 15)
         for r in range(2):
             ws.write_string(r + 1, 1, df.iloc[r]["DNI/CE/RUC"])
             ws.write_string(r + 1, 3, df.iloc[r]["IMEI"])
@@ -658,7 +696,8 @@ def plantilla_ventas() -> bytes:
         for i, l in enumerate([
             "INSTRUCCIONES – IMPORTACIÓN MASIVA DE VENTAS",
             "Columnas obligatorias: CLIENTE, DNI/CE/RUC, MODELO, IMEI, PRECIO, FECHA, MODALIDAD, CONTADO/CUOTAS, #CUOTAS.",
-            "Columnas opcionales (gris): BO y MOTORIZADO.",
+            "Columnas opcionales (gris): I. COBRADO, BO y MOTORIZADO.",
+            "I. COBRADO = importe que se cobró al cliente. Si se deja vacío: CONTADO = precio; CUOTAS = 0.",
             "DNI/CE/RUC y IMEI deben estar en formato TEXTO para no perder ceros ni dígitos.",
             "El tipo de documento se detecta solo: 8 dígitos = DNI, 11 dígitos = RUC, otro = CE.",
             "FECHA en formato DD/MM/AAAA. MODALIDAD: PORTABILIDAD, ALTA NUEVA, RENOVACIÓN, etc.",

@@ -7,6 +7,9 @@ from core.utils import hoy, limpiar_serie, plantilla_importacion, soles0, to_exc
 from modulos.dashboard import encabezado
 
 
+MODALIDAD_TXT = {"CONSIGNACION": "Consignación", "COMPRA DIRECTA": "Propio (compra directa)"}
+
+
 def render():
     encabezado("🛒 Compras / Ingresos", "Ingreso de equipos en consignación y SIM card: importación masiva por Excel o registro manual")
     u = usuario_actual()
@@ -22,17 +25,21 @@ def render():
                 st.success(msg_ok)
                 st.balloons()
             c = st.columns([2, 1])
-            c[0].markdown("Estructura del Excel: **MODELO – MARCA – IMEI – PRECIO – N_FACTURA** "
-                          "(la columna IMEI en formato *texto*). Para SIM card coloque el ICCID en la columna IMEI.")
+            c[0].markdown("Estructura del Excel: **MODELO – MARCA – IMEI – PRECIO – N_FACTURA** y opcional **CATEGORIA** "
+                          "(MÓVIL, IFI, TFI u OLO). La columna IMEI en formato *texto*. Para SIM card coloque el ICCID "
+                          "en la columna IMEI.")
             c[1].download_button("⬇️ Descargar plantilla", plantilla_importacion(), "plantilla_importacion_imei.xlsx",
                                  width="stretch")
             with st.form("imp_form"):
-                f = st.columns(4)
+                f = st.columns(5)
                 tipo = f[0].selectbox("Tipo de producto", ["EQUIPO", "SIM"])
-                fecha = f[1].date_input("Fecha de compra / ingreso", hoy(), format="DD/MM/YYYY",
+                categoria = f[1].selectbox("Categoría del equipo", list(sv.CATEGORIAS),
+                                           format_func=lambda k: sv.CATEGORIAS[k],
+                                           help="Se usa si el Excel no trae la columna CATEGORIA. No aplica a SIM.")
+                fecha = f[2].date_input("Fecha de compra / ingreso", hoy(), format="DD/MM/YYYY",
                                         help="Desde esta fecha corren los 90 días")
-                modalidad = f[2].selectbox("Modalidad", ["CONSIGNACION", "COMPRA DIRECTA"])
-                doc = f[3].text_input("N° guía / documento (opcional)")
+                modalidad = f[3].selectbox("Modalidad", ["CONSIGNACION", "COMPRA DIRECTA"], format_func=MODALIDAD_TXT.get)
+                doc = f[4].text_input("N° guía / documento (opcional)")
                 archivo = st.file_uploader("Archivo Excel (.xlsx) o CSV", type=["xlsx", "xls", "csv"])
                 validar = st.form_submit_button("1️⃣ Validar archivo", type="primary")
             if validar and archivo:
@@ -42,7 +49,7 @@ def render():
                     else:
                         raw = pd.read_excel(archivo, dtype=str)
                     with st.spinner(f"Validando {len(raw):,} registros..."):
-                        res = sv.validar_importacion(raw, tipo)
+                        res = sv.validar_importacion(raw, tipo, categoria)
                     st.session_state.imp = {"res": res, "tipo": tipo, "fecha": fecha, "modalidad": modalidad,
                                             "doc": doc, "archivo": archivo.name}
                 except Exception as e:
@@ -66,7 +73,7 @@ def render():
                     st.download_button("⬇️ Descargar errores", to_excel({"Errores": err}), "errores_importacion.xlsx")
                 if len(ok):
                     with st.expander(f"Ver registros válidos ({len(ok):,})"):
-                        resumen = ok.groupby(["MARCA", "MODELO"]).agg(Unidades=("IMEI", "size"),
+                        resumen = ok.groupby(["CATEGORIA", "MARCA", "MODELO"]).agg(Unidades=("IMEI", "size"),
                                                                      Total=("PRECIO", "sum")).reset_index()
                         st.dataframe(resumen, hide_index=True)
                         st.dataframe(ok.head(500), hide_index=True)
@@ -89,15 +96,18 @@ def render():
         else:
             st.caption("Registre uno o varios IMEI del **mismo modelo y precio** (uno por línea; puede usar lector de código de barras).")
             with st.form("manual", clear_on_submit=False):
-                c = st.columns(4)
+                c = st.columns(5)
                 tipo = c[0].selectbox("Tipo", ["EQUIPO", "SIM"], key="m_tipo")
+                categoria = c[4].selectbox("Categoría", list(sv.CATEGORIAS), format_func=lambda k: sv.CATEGORIAS[k],
+                                           key="m_cat")
                 marca = c[1].text_input("Marca", key="m_marca")
                 modelo = c[2].text_input("Modelo", key="m_modelo")
                 precio = c[3].number_input("Precio compra (S/)", min_value=0.0, step=1.0, key="m_precio")
                 c = st.columns(3)
                 factura = c[0].text_input("N° factura / guía", key="m_fact")
                 fecha = c[1].date_input("Fecha compra", hoy(), format="DD/MM/YYYY", key="m_fecha")
-                modalidad = c[2].selectbox("Modalidad", ["CONSIGNACION", "COMPRA DIRECTA"], key="m_mod")
+                modalidad = c[2].selectbox("Modalidad", ["CONSIGNACION", "COMPRA DIRECTA"], key="m_mod",
+                                           format_func=MODALIDAD_TXT.get)
                 series = st.text_area("IMEI / ICCID (uno por línea)", height=160, key="m_series")
                 enviar = st.form_submit_button("Registrar ingreso", type="primary")
             if enviar:
@@ -107,7 +117,7 @@ def render():
                 else:
                     df = pd.DataFrame({"MODELO": modelo, "MARCA": marca, "IMEI": lineas, "PRECIO": precio,
                                        "N_FACTURA": factura})
-                    res = sv.validar_importacion(df, tipo)
+                    res = sv.validar_importacion(df, tipo, categoria)
                     ok = res[res["RESULTADO"] == "OK"]
                     err = res[res["RESULTADO"] == "ERROR"]
                     if len(err):

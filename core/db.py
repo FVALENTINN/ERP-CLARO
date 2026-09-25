@@ -65,6 +65,7 @@ inventario = Table(
     Column("nro_factura", String(60)),
     Column("fecha_compra", Date, nullable=False),
     Column("modalidad", String(20), default="CONSIGNACION"),
+    Column("categoria", String(10), default="MOVIL"),   # MOVIL / IFI / TFI / OLO / SIM
     Column("lote_id", Integer, ForeignKey("lotes_compra.id")),
     Column("estado", String(20), default="DISPONIBLE"),  # DISPONIBLE, VENDIDO, DEVUELTO, BAJA
     Column("fecha_venta", Date),
@@ -94,6 +95,7 @@ ventas = Table(
     Column("modalidad", String(30)),                    # PORTABILIDAD, ALTA NUEVA, RENOVACIÓN...
     Column("forma_pago", String(10)),                   # CONTADO / CUOTAS
     Column("nro_cuotas", Integer),
+    Column("importe_cobrado", Float),                   # I. cobrado al cliente
     Column("comprobante", String(40)),
     Column("factura_claro", String(40)),                # factura que emite Claro luego de la venta
     Column("monto_factura_claro", Float),
@@ -206,7 +208,9 @@ def es_postgres():
 def _migrar(engine):
     """Agrega columnas nuevas a tablas ya existentes (bases creadas con versiones anteriores)."""
     from sqlalchemy import inspect
-    nuevas = {"ventas": {"modalidad": "VARCHAR(30)", "forma_pago": "VARCHAR(10)", "nro_cuotas": "INTEGER"}}
+    nuevas = {"ventas": {"modalidad": "VARCHAR(30)", "forma_pago": "VARCHAR(10)", "nro_cuotas": "INTEGER",
+                         "importe_cobrado": "FLOAT"},
+              "inventario": {"categoria": "VARCHAR(10)"}}
     insp = inspect(engine)
     with engine.begin() as cn:
         for tabla, cols in nuevas.items():
@@ -214,6 +218,8 @@ def _migrar(engine):
             for col, tipo in cols.items():
                 if col not in actuales:
                     cn.execute(text(f"ALTER TABLE {tabla} ADD COLUMN {col} {tipo}"))
+        cn.execute(text("UPDATE inventario SET categoria = CASE WHEN tipo='SIM' THEN 'SIM' ELSE 'MOVIL' END "
+                        "WHERE categoria IS NULL"))
 
 
 def _seed(engine):
