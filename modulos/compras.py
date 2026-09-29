@@ -7,6 +7,13 @@ from core.utils import hoy, limpiar_serie, plantilla_importacion, soles0, to_exc
 from modulos.dashboard import encabezado
 
 
+def _ddmm(df):
+    v = df.copy()
+    if "FECHA" in v.columns:
+        v["FECHA"] = v["FECHA"].map(lambda d: d.strftime("%d/%m/%Y") if hasattr(d, "strftime") else "")
+    return v
+
+
 MODALIDAD_TXT = {"CONSIGNACION": "Consignación", "COMPRA DIRECTA": "Propio (compra directa)"}
 
 
@@ -25,7 +32,7 @@ def render():
                 st.success(msg_ok)
                 st.balloons()
             c = st.columns([2, 1])
-            c[0].markdown("Estructura del Excel: **MODELO – MARCA – IMEI – PRECIO – N_FACTURA** y opcional **CATEGORIA** "
+            c[0].markdown("Estructura del Excel: **MODELO – MARCA – IMEI – PRECIO – N_FACTURA – FECHA** y opcional **CATEGORIA** "
                           "(MÓVIL, IFI, TFI u OLO). La columna IMEI en formato *texto*. Para SIM card coloque el ICCID "
                           "en la columna IMEI.")
             c[1].download_button("⬇️ Descargar plantilla", plantilla_importacion(), "plantilla_importacion_imei.xlsx",
@@ -36,8 +43,9 @@ def render():
                 categoria = f[1].selectbox("Categoría del equipo", list(sv.CATEGORIAS),
                                            format_func=lambda k: sv.CATEGORIAS[k],
                                            help="Se usa si el Excel no trae la columna CATEGORIA. No aplica a SIM.")
-                fecha = f[2].date_input("Fecha de compra / ingreso", hoy(), format="DD/MM/YYYY",
-                                        help="Desde esta fecha corren los 90 días")
+                fecha = f[2].date_input("Fecha de compra (si el Excel no la trae)", hoy(), format="DD/MM/YYYY",
+                                        help="Se usa solo en las filas con la columna FECHA vacía. "
+                                             "Desde la fecha de compra corren los 90 días.")
                 modalidad = f[3].selectbox("Modalidad", ["CONSIGNACION", "COMPRA DIRECTA"], format_func=MODALIDAD_TXT.get)
                 doc = f[4].text_input("N° guía / documento (opcional)")
                 archivo = st.file_uploader("Archivo Excel (.xlsx) o CSV", type=["xlsx", "xls", "csv"])
@@ -49,7 +57,7 @@ def render():
                     else:
                         raw = pd.read_excel(archivo, dtype=str)
                     with st.spinner(f"Validando {len(raw):,} registros..."):
-                        res = sv.validar_importacion(raw, tipo, categoria)
+                        res = sv.validar_importacion(raw, tipo, categoria, fecha)
                     st.session_state.imp = {"res": res, "tipo": tipo, "fecha": fecha, "modalidad": modalidad,
                                             "doc": doc, "archivo": archivo.name}
                 except Exception as e:
@@ -69,14 +77,14 @@ def render():
                 m[3].metric("Valor a ingresar", soles0(ok["PRECIO"].sum()))
                 if len(err):
                     st.error("Se detectaron registros con error. Solo se importarán los válidos.")
-                    st.dataframe(err, hide_index=True, height=220)
-                    st.download_button("⬇️ Descargar errores", to_excel({"Errores": err}), "errores_importacion.xlsx")
+                    st.dataframe(_ddmm(err), hide_index=True, height=220)
+                    st.download_button("⬇️ Descargar errores", to_excel({"Errores": _ddmm(err)}), "errores_importacion.xlsx")
                 if len(ok):
                     with st.expander(f"Ver registros válidos ({len(ok):,})"):
                         resumen = ok.groupby(["CATEGORIA", "MARCA", "MODELO"]).agg(Unidades=("IMEI", "size"),
                                                                      Total=("PRECIO", "sum")).reset_index()
                         st.dataframe(resumen, hide_index=True)
-                        st.dataframe(ok.head(500), hide_index=True)
+                        st.dataframe(_ddmm(ok.head(500)), hide_index=True)
                     b = st.columns([1, 1, 3])
                     if b[0].button(f"2️⃣ Importar {len(ok):,} registros", type="primary"):
                         with st.spinner("Guardando en la base de datos..."):
@@ -117,7 +125,7 @@ def render():
                 else:
                     df = pd.DataFrame({"MODELO": modelo, "MARCA": marca, "IMEI": lineas, "PRECIO": precio,
                                        "N_FACTURA": factura})
-                    res = sv.validar_importacion(df, tipo, categoria)
+                    res = sv.validar_importacion(df, tipo, categoria, fecha)
                     ok = res[res["RESULTADO"] == "OK"]
                     err = res[res["RESULTADO"] == "ERROR"]
                     if len(err):
