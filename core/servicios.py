@@ -31,6 +31,8 @@ ALIAS_COLS = {
     "NRO FACTURA": "N_FACTURA", "NRO_FACTURA": "N_FACTURA", "FACTURA": "N_FACTURA", "N FACTURA": "N_FACTURA",
     "NUMERO FACTURA": "N_FACTURA", "Nº FACTURA": "N_FACTURA",
     "CATEGORIA": "CATEGORIA", "CATEGORÍA": "CATEGORIA", "TIPO EQUIPO": "CATEGORIA", "LINEA": "CATEGORIA",
+    "FECHA": "FECHA", "FECHA COMPRA": "FECHA", "FECHA_COMPRA": "FECHA", "FECHA DE COMPRA": "FECHA",
+    "FECHA INGRESO": "FECHA", "FECHA_INGRESO": "FECHA",
 }
 
 
@@ -108,9 +110,10 @@ def normalizar_columnas(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns=nuevas)
 
 
-def validar_importacion(df_raw: pd.DataFrame, tipo: str, categoria: str = "MOVIL") -> pd.DataFrame:
+def validar_importacion(df_raw: pd.DataFrame, tipo: str, categoria: str = "MOVIL",
+                        fecha_defecto: date = None) -> pd.DataFrame:
     """Devuelve el DataFrame con columnas RESULTADO (OK/ERROR) y MOTIVO.
-    La columna CATEGORIA es opcional; si no viene se usa la categoría elegida en pantalla."""
+    Las columnas CATEGORIA y FECHA son opcionales; si vienen vacías se usa lo elegido en pantalla."""
     df = normalizar_columnas(df_raw.copy())
     faltan = [c for c in COLS_IMPORT if c not in df.columns]
     if faltan:
@@ -118,7 +121,9 @@ def validar_importacion(df_raw: pd.DataFrame, tipo: str, categoria: str = "MOVIL
                          f"Estructura requerida: {' - '.join(COLS_IMPORT)}")
     if "CATEGORIA" not in df.columns:
         df["CATEGORIA"] = ""
-    df = df[COLS_IMPORT + ["CATEGORIA"]].copy()
+    if "FECHA" not in df.columns:
+        df["FECHA"] = ""
+    df = df[COLS_IMPORT + ["FECHA", "CATEGORIA"]].copy()
     df = df.dropna(how="all")
     df["IMEI"] = df["IMEI"].map(limpiar_serie)
     df["MODELO"] = df["MODELO"].fillna("").astype(str).str.strip().str.upper()
@@ -126,6 +131,10 @@ def validar_importacion(df_raw: pd.DataFrame, tipo: str, categoria: str = "MOVIL
     df["N_FACTURA"] = df["N_FACTURA"].fillna("").astype(str).str.strip().str.upper().str.replace(r"\.0$", "", regex=True)
     df["PRECIO"] = pd.to_numeric(df["PRECIO"], errors="coerce")
     df["CATEGORIA"] = ("SIM" if tipo == "SIM" else df["CATEGORIA"].map(lambda v: normalizar_categoria(v, categoria)))
+    fecha_txt = df["FECHA"].fillna("").astype(str).str.strip()
+    df["FECHA"] = df["FECHA"].map(parse_fecha)
+    fecha_mala = fecha_txt.ne("") & fecha_txt.str.upper().ne("NAN") & df["FECHA"].isna()
+    df["FECHA"] = df["FECHA"].map(lambda f: f if f else (fecha_defecto or hoy()))
 
     existentes = series_existentes(df["IMEI"].tolist())
     duplicados_archivo = df["IMEI"].duplicated(keep="first")
@@ -145,6 +154,10 @@ def validar_importacion(df_raw: pd.DataFrame, tipo: str, categoria: str = "MOVIL
             errores.append("Marca vacía")
         if pd.isna(r["PRECIO"]) or r["PRECIO"] < 0:
             errores.append("Precio inválido")
+        if fecha_mala.loc[idx]:
+            errores.append("Fecha inválida (use DD/MM/AAAA)")
+        elif r["FECHA"] > hoy():
+            errores.append(f"Fecha de compra futura ({r['FECHA']:%d/%m/%Y})")
         if tipo == "EQUIPO" and r["CATEGORIA"] not in CATEGORIAS:
             errores.append("Categoría inválida (use MÓVIL, IFI, TFI u OLO)")
         resultados.append("ERROR" if errores else "OK")
@@ -159,10 +172,16 @@ def registrar_compra(items: pd.DataFrame, tipo: str, fecha_compra: date, modalid
     """items con columnas MODELO, MARCA, IMEI, PRECIO, N_FACTURA (solo filas válidas)."""
     if items.empty:
         return 0
+    if "FECHA" in items.columns:
+        items = items.copy()
+        items["FECHA"] = items["FECHA"].map(lambda f: f if f else fecha_compra)
+        fecha_lote = min(items["FECHA"])
+    else:
+        fecha_lote = fecha_compra
     engine = db.get_engine()
     with engine.begin() as cn:
         res = cn.execute(db.lotes_compra.insert().values(
-            fecha_compra=fecha_compra, nro_documento=nro_documento or ", ".join(sorted(set(items["N_FACTURA"])))[:60],
+            fecha_compra=fecha_lote, nro_documento=nro_documento or ", ".join(sorted(set(items["N_FACTURA"])))[:60],
             modalidad=modalidad, origen=origen, cantidad=len(items),
             total=float(items["PRECIO"].sum()), observacion=observacion, usuario=usuario, creado_en=ahora(),
         ))
@@ -170,7 +189,7 @@ def registrar_compra(items: pd.DataFrame, tipo: str, fecha_compra: date, modalid
         filas = [{
             "tipo": tipo, "marca": r.MARCA, "modelo": r.MODELO, "serie": r.IMEI,
             "precio_compra": float(r.PRECIO), "nro_factura": r.N_FACTURA or nro_documento,
-            "fecha_compra": fecha_compra, "modalidad": modalidad, "lote_id": lote_id,
+            "fecha_compra": getattr(r, "FECHA", None) or fecha_compra, "modalidad": modalidad, "lote_id": lote_id,
             "categoria": ("SIM" if tipo == "SIM" else (getattr(r, "CATEGORIA", "") or "MOVIL")),
             "estado": "DISPONIBLE", "creado_por": usuario, "creado_en": ahora(),
         } for r in items.itertuples(index=False)]
