@@ -145,6 +145,7 @@ def plantilla_importacion() -> bytes:
         "IMEI": ["356938035643809", "490154203237518"],
         "PRECIO": [599.00, 529.00],
         "N_FACTURA": ["F001-000123", "F001-000123"],
+        "FECHA": [hoy().strftime("%d/%m/%Y")] * 2,
         "CATEGORIA": ["MOVIL", "IFI"],
     })
     with pd.ExcelWriter(buf, engine="xlsxwriter") as xw:
@@ -159,10 +160,12 @@ def plantilla_importacion() -> bytes:
         ws.set_column(2, 2, 22, txt)   # IMEI como TEXTO para no perder dígitos
         ws.set_column(3, 3, 12)
         ws.set_column(4, 4, 16, txt)
-        ws.set_column(5, 5, 14)
-        ws.data_validation(1, 5, 20000, 5, {"validate": "list", "source": ["MOVIL", "IFI", "TFI", "OLO"]})
+        ws.set_column(5, 5, 14, txt)
+        ws.set_column(6, 6, 14)
+        ws.data_validation(1, 6, 20000, 6, {"validate": "list", "source": ["MOVIL", "IFI", "TFI", "OLO"]})
         for r in range(1, 3):
             ws.write_string(r, 2, df.iloc[r - 1]["IMEI"])
+            ws.write_string(r, 5, df.iloc[r - 1]["FECHA"])
         nota = wb.add_worksheet("INSTRUCCIONES")
         lineas = [
             "INSTRUCCIONES DE IMPORTACIÓN",
@@ -170,7 +173,9 @@ def plantilla_importacion() -> bytes:
             "2. La columna IMEI debe tener formato TEXTO (15 dígitos). Para SIM card use el ICCID (19-20 dígitos).",
             "3. PRECIO = precio de compra a Claro por unidad (sin símbolo S/).",
             "4. N_FACTURA = número de factura o guía de remisión del ingreso.",
-            "5. La fecha de compra y el tipo (EQUIPO / SIM) se eligen en el sistema al importar.",
+            "5. El tipo (EQUIPO / SIM) y la modalidad (consignación / propio) se eligen en el sistema al importar.",
+            "5a. FECHA = fecha de compra/ingreso en formato DD/MM/AAAA. Desde esa fecha corren los 90 días.",
+            "    Si se deja vacía se usa la fecha elegida en pantalla.",
             "5b. CATEGORIA (opcional): MOVIL, IFI, TFI u OLO. Si se deja vacía se usa la categoría elegida en pantalla.",
             "6. El sistema rechaza IMEI duplicados, con longitud incorrecta o dígito verificador inválido.",
             "7. Puede importar miles de registros en un solo archivo.",
